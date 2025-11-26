@@ -22,6 +22,9 @@ interface RoomState {
   gameStatus: "waiting" | "playing";
   currentLevel: number;
   createdAt: number;
+  // Multiplayer game tracking
+  playersAtExit: Set<string>;
+  eliminatedPlayers: Set<string>;
 }
 
 // Message types from clients
@@ -44,6 +47,8 @@ export default class GameRoom implements Party.Server {
     gameStatus: "waiting",
     currentLevel: 1,
     createdAt: Date.now(),
+    playersAtExit: new Set(),
+    eliminatedPlayers: new Set(),
   };
 
   // Track if we've registered with the lobby
@@ -240,6 +245,10 @@ export default class GameRoom implements Party.Server {
 
     this.state.players.delete(conn.id);
 
+    // Clean up exit/elimination tracking
+    this.state.playersAtExit.delete(conn.id);
+    this.state.eliminatedPlayers.delete(conn.id);
+
     // If room is now empty, close it
     if (this.state.players.size === 0) {
       this.notifyLobby("ROOM_CLOSED");
@@ -381,6 +390,10 @@ export default class GameRoom implements Party.Server {
               this.state.gameStatus = "playing";
               this.state.currentLevel = data.levelId || 1;
 
+              // Reset game tracking state
+              this.state.playersAtExit.clear();
+              this.state.eliminatedPlayers.clear();
+
               this.room.broadcast(
                 JSON.stringify({
                   type: "GAME_START",
@@ -406,18 +419,100 @@ export default class GameRoom implements Party.Server {
           break;
 
         case "GAME_EVENT":
-          // Broadcast game events (enemy killed, egg collected, etc.)
+          // Handle specific game events with server authority
           console.log(`[GAME-EVENT] ${data.event} from ${sender.id}:`, JSON.stringify(data.data));
-          console.log(`[GAME-EVENT] Broadcasting to ${this.state.players.size - 1} other players`);
-          this.room.broadcast(
-            JSON.stringify({
-              type: "GAME_EVENT",
-              event: data.event,
-              data: data.data,
-              fromPlayer: sender.id,
-            }),
-            [sender.id]
-          );
+
+          if (data.event === "PLAYER_AT_EXIT") {
+            // Server tracks who's at exit
+            this.state.playersAtExit.add(sender.id);
+            console.log(`[EXIT] Player ${sender.id} at exit. Total: ${this.state.playersAtExit.size}/${this.state.players.size}`);
+
+            // Check if all non-eliminated players are at exit
+            const activePlayers = Array.from(this.state.players.keys())
+              .filter(id => !this.state.eliminatedPlayers.has(id));
+            const allAtExit = activePlayers.every(id => this.state.playersAtExit.has(id));
+
+            if (allAtExit && activePlayers.length > 0) {
+              console.log(`[EXIT] All active players at exit! Broadcasting ALL_AT_EXIT`);
+              // Broadcast to ALL players (including sender)
+              this.room.broadcast(
+                JSON.stringify({
+                  type: "GAME_EVENT",
+                  event: "ALL_AT_EXIT",
+                  data: {},
+                })
+              );
+            } else {
+              // Just relay to others
+              this.room.broadcast(
+                JSON.stringify({
+                  type: "GAME_EVENT",
+                  event: data.event,
+                  data: data.data,
+                  fromPlayer: sender.id,
+                }),
+                [sender.id]
+              );
+            }
+          } else if (data.event === "PLAYER_DIED") {
+            // Track eliminated players
+            if (data.data.livesRemaining <= 0) {
+              this.state.eliminatedPlayers.add(sender.id);
+              console.log(`[DEATH] Player ${sender.id} eliminated. Total eliminated: ${this.state.eliminatedPlayers.size}/${this.state.players.size}`);
+
+              // Check if all players are eliminated
+              if (this.state.eliminatedPlayers.size >= this.state.players.size) {
+                console.log(`[DEATH] All players eliminated! Broadcasting ALL_PLAYERS_ELIMINATED`);
+                this.room.broadcast(
+                  JSON.stringify({
+                    type: "GAME_EVENT",
+                    event: "ALL_PLAYERS_ELIMINATED",
+                    data: {},
+                  })
+                );
+              }
+            }
+
+            // Relay death event to others
+            this.room.broadcast(
+              JSON.stringify({
+                type: "GAME_EVENT",
+                event: data.event,
+                data: data.data,
+                fromPlayer: sender.id,
+              }),
+              [sender.id]
+            );
+          } else if (data.event === "NEXT_LEVEL") {
+            // Reset exit/elimination state for new level
+            this.state.playersAtExit.clear();
+            this.state.eliminatedPlayers.clear();
+            this.state.currentLevel = data.data.levelId;
+            console.log(`[LEVEL] Transitioning to level ${data.data.levelId}`);
+
+            // Broadcast to all (including sender for consistency)
+            this.room.broadcast(
+              JSON.stringify({
+                type: "GAME_EVENT",
+                event: data.event,
+                data: data.data,
+                fromPlayer: sender.id,
+              }),
+              [sender.id]
+            );
+          } else {
+            // Default: broadcast to others
+            console.log(`[GAME-EVENT] Broadcasting to ${this.state.players.size - 1} other players`);
+            this.room.broadcast(
+              JSON.stringify({
+                type: "GAME_EVENT",
+                event: data.event,
+                data: data.data,
+                fromPlayer: sender.id,
+              }),
+              [sender.id]
+            );
+          }
           break;
 
         case "CHAT":

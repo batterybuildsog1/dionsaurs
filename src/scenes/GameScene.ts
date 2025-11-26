@@ -31,9 +31,9 @@ export class GameScene extends Phaser.Scene {
   private isMultiplayer: boolean = false;
   private isInvincible: boolean = false;
 
-  // Network update throttling (prevents flooding - 60fps -> 10 updates/sec)
+  // Network update throttling (30 updates/sec for smooth multiplayer)
   private lastNetworkUpdateTime: number = 0;
-  private networkUpdateInterval: number = 100; // milliseconds between updates
+  private networkUpdateInterval: number = 33; // milliseconds between updates (30/sec)
 
   // Multiplayer exit synchronization
   private playersAtExit: Set<string> = new Set();
@@ -374,7 +374,7 @@ export class GameScene extends Phaser.Scene {
         targets: remotePlayer,
         x: data.x,
         y: data.y,
-        duration: 80, // Slightly less than update interval for smooth catch-up
+        duration: 30, // Match the 33ms update interval for smooth motion
         ease: 'Linear'
       });
       remotePlayer.setFlipX(data.flipX);
@@ -421,6 +421,31 @@ export class GameScene extends Phaser.Scene {
           this.playersAtExit.add(data.data.playerId);
           console.log(`[EXIT-SYNC] Players at exit after: ${Array.from(this.playersAtExit).join(", ")}`);
           this.checkAllPlayersAtExit();
+          break;
+        case "PLAYER_DIED":
+          // Remote player died - show death animation on their sprite
+          console.log(`[DEATH] Player ${data.data.playerId} died, lives remaining: ${data.data.livesRemaining}`);
+          const deadRemotePlayer = this.remotePlayers.get(data.data.playerId);
+          if (deadRemotePlayer) {
+            // Visual feedback - flash red and fade
+            this.tweens.add({
+              targets: deadRemotePlayer,
+              alpha: 0,
+              duration: 500,
+              onComplete: () => {
+                // Player will reappear when they respawn (via position updates)
+                // or stay invisible if they're eliminated
+                if (data.data.livesRemaining > 0) {
+                  deadRemotePlayer.setAlpha(1);
+                }
+              }
+            });
+          }
+          break;
+        case "ALL_PLAYERS_ELIMINATED":
+          // Server says everyone is out - show game over
+          console.log(`[DEATH] All players eliminated - game over`);
+          this.showMultiplayerGameOver();
           break;
         case "ALL_AT_EXIT":
           // All players reached exit - show completion UI
@@ -599,8 +624,10 @@ export class GameScene extends Phaser.Scene {
     const remainingLives = GameState.decrementLives();
     this.livesText.setText(`Lives: ${remainingLives}`);
 
-    // Pause player input during death
+    // Stop this player only (don't affect global physics in multiplayer)
     this.localPlayer.setVelocity(0, 0);
+    const playerBody = this.localPlayer.body as Phaser.Physics.Arcade.Body;
+    playerBody.enable = false; // Disable physics for this player only
 
     // Screen shake
     this.cameras.main.shake(300, 0.02);
@@ -615,10 +642,27 @@ export class GameScene extends Phaser.Scene {
       duration: 500,
       ease: "Power2",
       onComplete: () => {
-        if (remainingLives <= 0) {
-          this.showGameOver();
+        if (this.isMultiplayer) {
+          // Broadcast death event to other players
+          networkManager.sendGameEvent("PLAYER_DIED", {
+            playerId: networkManager.myPlayerId,
+            livesRemaining: remainingLives
+          });
+
+          if (remainingLives <= 0) {
+            // This player is eliminated - show spectator overlay
+            this.showPlayerEliminated();
+          } else {
+            // Respawn this player (others continue unaffected)
+            this.respawnPlayer();
+          }
         } else {
-          this.respawnPlayer();
+          // Single player - existing logic
+          if (remainingLives <= 0) {
+            this.showGameOver();
+          } else {
+            this.respawnPlayer();
+          }
         }
       },
     });
@@ -667,6 +711,10 @@ export class GameScene extends Phaser.Scene {
     this.localPlayer.setScale(0);
     this.localPlayer.setAlpha(0);
     this.localPlayer.clearTint();
+
+    // Re-enable physics body (was disabled in handleDeath)
+    const playerBody = this.localPlayer.body as Phaser.Physics.Arcade.Body;
+    playerBody.enable = true;
 
     // Spawn animation - scale up and fade in
     this.tweens.add({
@@ -746,6 +794,80 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  private showPlayerEliminated() {
+    // Player is out of lives in multiplayer - show spectator overlay
+    // Don't pause physics - other players continue playing
+    const cx = this.cameras.main.width / 2;
+    const cy = this.cameras.main.height / 2;
+
+    const overlay = this.add.container(cx, cy);
+    overlay.setScrollFactor(0);
+    overlay.setDepth(100);
+
+    const bg = this.add.rectangle(0, 0, 400, 150, 0x000000, 0.8);
+    const titleText = this.add.text(0, -30, "YOU'RE OUT!", {
+      fontSize: "36px",
+      color: "#ff6666",
+      fontStyle: "bold",
+    }).setOrigin(0.5);
+
+    const statusText = this.add.text(0, 20, "Waiting for other players...", {
+      fontSize: "18px",
+      color: "#ffffff",
+    }).setOrigin(0.5);
+
+    // Pulsing animation
+    this.tweens.add({
+      targets: statusText,
+      alpha: 0.5,
+      duration: 500,
+      yoyo: true,
+      repeat: -1,
+    });
+
+    overlay.add([bg, titleText, statusText]);
+
+    // Listen for ALL_PLAYERS_ELIMINATED from server
+    // (will be handled in gameEvent handler)
+  }
+
+  private showMultiplayerGameOver() {
+    // All players eliminated in multiplayer - show game over for everyone
+    // Don't pause physics (already paused for eliminated players)
+    const cx = this.cameras.main.width / 2;
+    const cy = this.cameras.main.height / 2;
+
+    this.add
+      .rectangle(cx, cy, 400, 200, 0x000000, 0.9)
+      .setScrollFactor(0)
+      .setDepth(100);
+
+    this.add
+      .text(cx, cy - 30, "GAME OVER", {
+        fontSize: "48px",
+        color: "#ff0000",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(101);
+
+    this.add
+      .text(cx, cy + 30, `Team Score: ${this.score}`, {
+        fontSize: "24px",
+        color: "#ffffff",
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(101);
+
+    this.time.delayedCall(3000, () => {
+      networkManager.disconnect();
+      GameState.reset();
+      this.scene.start("MenuScene");
+    });
+  }
+
   private collectEgg(_player: any, egg: any) {
     (egg as Egg).destroy();
     this.score += 10;
@@ -798,30 +920,16 @@ export class GameScene extends Phaser.Scene {
 
     console.log(`[EXIT-SYNC] reachExit() called, isMultiplayer: ${this.isMultiplayer}`);
 
-    // In multiplayer, we need all players to reach the exit
+    // In multiplayer, tell server we're at exit - server handles the rest
     if (this.isMultiplayer) {
       const myId = networkManager.myPlayerId;
-      const totalPlayers = networkManager.getAllPlayers().length;
+      console.log(`[EXIT-SYNC] Sending PLAYER_AT_EXIT to server`);
 
-      console.log(`[EXIT-SYNC] My ID: ${myId}, Total players: ${totalPlayers}`);
-      console.log(`[EXIT-SYNC] Players at exit before adding self: ${Array.from(this.playersAtExit).join(", ") || "none"}`);
+      // Send to server - server will track and broadcast ALL_AT_EXIT when everyone's there
+      networkManager.sendGameEvent("PLAYER_AT_EXIT", { playerId: myId });
 
-      if (!this.playersAtExit.has(myId)) {
-        this.playersAtExit.add(myId);
-        console.log(`[EXIT-SYNC] Added self to playersAtExit. Count: ${this.playersAtExit.size}/${totalPlayers}`);
-
-        // Broadcast that we reached the exit
-        networkManager.sendGameEvent("PLAYER_AT_EXIT", { playerId: myId });
-        console.log(`[EXIT-SYNC] Sent PLAYER_AT_EXIT event`);
-
-        // Show waiting overlay
-        this.showWaitingOverlay();
-
-        // Check if all players are at exit (with small delay to allow network sync)
-        this.time.delayedCall(100, () => {
-          this.checkAllPlayersAtExit();
-        });
-      }
+      // Show waiting overlay
+      this.showWaitingOverlay();
       return;
     }
 
@@ -867,33 +975,14 @@ export class GameScene extends Phaser.Scene {
   }
 
   private checkAllPlayersAtExit() {
+    // Server now handles ALL_AT_EXIT logic - this is just for logging
     if (this.levelCompleteShown || this.sceneShuttingDown) {
       console.log(`[EXIT-SYNC] checkAllPlayersAtExit() skipped - levelComplete: ${this.levelCompleteShown}, shuttingDown: ${this.sceneShuttingDown}`);
       return;
     }
 
-    // Get total player count
-    const totalPlayers = networkManager.getAllPlayers().length;
-    const playersAtExitCount = this.playersAtExit.size;
-
-    console.log(`[EXIT-SYNC] checkAllPlayersAtExit() - ${playersAtExitCount}/${totalPlayers} players at exit`);
-    console.log(`[EXIT-SYNC] Players at exit: ${Array.from(this.playersAtExit).join(", ")}`);
-    console.log(`[EXIT-SYNC] All players: ${networkManager.getAllPlayers().map(p => p.id).join(", ")}`);
-
-    // Check if all players have reached the exit
-    if (playersAtExitCount >= totalPlayers && totalPlayers > 0) {
-      console.log(`[EXIT-SYNC] All players at exit! isHost: ${networkManager.isHost}`);
-
-      // Host broadcasts that everyone made it
-      if (networkManager.isHost) {
-        console.log(`[EXIT-SYNC] Host sending ALL_AT_EXIT event`);
-        networkManager.sendGameEvent("ALL_AT_EXIT", {});
-      }
-      // Show level complete for everyone
-      this.showLevelComplete();
-    } else {
-      console.log(`[EXIT-SYNC] Still waiting for ${totalPlayers - playersAtExitCount} more player(s)`);
-    }
+    console.log(`[EXIT-SYNC] checkAllPlayersAtExit() - local tracking: ${this.playersAtExit.size} players at exit`);
+    // Server will broadcast ALL_AT_EXIT when appropriate
   }
 
   private showLevelComplete() {
