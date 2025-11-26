@@ -35,7 +35,7 @@ export class LevelSelectScene extends Phaser.Scene {
       const bg = this.add.rectangle(width / 2, y, 400, 60, isLocked ? 0x555555 : 0x00aa00)
         .setInteractive({ useHandCursor: !isLocked });
 
-      const text = this.add.text(width / 2, y, `${level.id}. ${level.name}`, {
+      this.add.text(width / 2, y, `${level.id}. ${level.name}`, {
         fontSize: '24px',
         color: isLocked ? '#aaaaaa' : '#ffffff'
       }).setOrigin(0.5);

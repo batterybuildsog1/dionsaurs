@@ -7,7 +7,6 @@ export class MenuScene extends Phaser.Scene {
 
   create() {
     const width = this.cameras.main.width;
-    const height = this.cameras.main.height;
 
     // Title
     this.add.text(width / 2, 150, 'Dino Clash Adventure', {

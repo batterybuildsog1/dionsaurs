@@ -1,340 +1,492 @@
-import Phaser from 'phaser';
-import { Player } from '../objects/Player';
-import { Enemy } from '../objects/Enemy';
-import { Egg } from '../objects/Egg';
-import { PowerUp } from '../objects/PowerUp';
-import { LEVELS, LevelData } from '../data/levels';
-import { networkManager } from '../services/NetworkManager';
+import Phaser from "phaser";
+import { Player } from "../objects/Player";
+import { Enemy } from "../objects/Enemy";
+import { Egg } from "../objects/Egg";
+import { PowerUp } from "../objects/PowerUp";
+import { LEVELS, LevelData } from "../data/levels";
+import { networkManager, PlayerState } from "../services/NetworkManager";
+
+// Player colors for visual distinction
+const PLAYER_COLORS = [0x88ff88, 0xff8888, 0x8888ff, 0xffff88];
 
 export class GameScene extends Phaser.Scene {
-  private player!: Player;
-  private player2?: Player;
+  private localPlayer!: Player;
+  private remotePlayers: Map<string, Player> = new Map();
   private platforms!: Phaser.Physics.Arcade.StaticGroup;
   private enemies!: Phaser.GameObjects.Group;
   private eggs!: Phaser.GameObjects.Group;
   private powerups!: Phaser.GameObjects.Group;
-  
+
   private score: number = 0;
   private scoreText!: Phaser.GameObjects.Text;
   private currentLevel: LevelData;
-  
+
   private isMultiplayer: boolean = false;
-  private isHost: boolean = false;
 
   constructor() {
-    super('GameScene');
-    this.currentLevel = LEVELS[0]; // Default to level 1
+    super("GameScene");
+    this.currentLevel = LEVELS[0];
   }
 
-  init(data: { levelId?: number, isMultiplayer?: boolean, isHost?: boolean }) {
+  init(data: { levelId?: number; isMultiplayer?: boolean; players?: PlayerState[] }) {
     if (data.levelId) {
-      this.currentLevel = LEVELS.find(l => l.id === data.levelId) || LEVELS[0];
+      this.currentLevel = LEVELS.find((l) => l.id === data.levelId) || LEVELS[0];
     }
     this.isMultiplayer = data.isMultiplayer || false;
-    this.isHost = data.isHost || false;
+
+    // Clear any previous remote players
+    this.remotePlayers.clear();
   }
 
   preload() {
-    // Assets are preloaded in BootScene or here if needed
-    // We assume common assets are loaded. 
-    // If levels need specific assets, load them here based on theme.
-    this.load.spritesheet('player', 'assets/dino.png', { frameWidth: 32, frameHeight: 32 });
-    this.load.spritesheet('enemy', 'assets/enemy.png', { frameWidth: 32, frameHeight: 32 });
-    this.load.spritesheet('tiles', 'assets/tiles.png', { frameWidth: 32, frameHeight: 32 });
+    this.load.spritesheet("player", "assets/dino.png", {
+      frameWidth: 32,
+      frameHeight: 32,
+    });
+    this.load.spritesheet("enemy", "assets/enemy.png", {
+      frameWidth: 32,
+      frameHeight: 32,
+    });
+    this.load.spritesheet("tiles", "assets/tiles.png", {
+      frameWidth: 32,
+      frameHeight: 32,
+    });
 
-    // Keep programmatically generated textures for simple objects if not replaced
-    this.make.graphics({ x: 0, y: 0, add: false })
-      .fillStyle(0xffff00)
-      .fillCircle(8, 8, 8)
-      .generateTexture('egg', 16, 16);
-      
-    this.make.graphics({ x: 0, y: 0, add: false })
-      .fillStyle(0x00ffff)
-      .fillRect(0, 0, 32, 64)
-      .generateTexture('exit', 32, 64);
-      
-    this.make.graphics({ x: 0, y: 0, add: false })
-      .fillStyle(0xffffff)
-      .fillTriangle(0, 32, 16, 0, 32, 32)
-      .generateTexture('powerup', 32, 32);
+    const eggGraphics = this.add.graphics();
+    eggGraphics.fillStyle(0xffff00);
+    eggGraphics.fillCircle(8, 8, 8);
+    eggGraphics.generateTexture("egg", 16, 16);
+    eggGraphics.destroy();
+
+    const exitGraphics = this.add.graphics();
+    exitGraphics.fillStyle(0x00ffff);
+    exitGraphics.fillRect(0, 0, 32, 64);
+    exitGraphics.generateTexture("exit", 32, 64);
+    exitGraphics.destroy();
+
+    const powerupGraphics = this.add.graphics();
+    powerupGraphics.fillStyle(0xffffff);
+    powerupGraphics.fillTriangle(0, 32, 16, 0, 32, 32);
+    powerupGraphics.generateTexture("powerup", 32, 32);
+    powerupGraphics.destroy();
   }
 
   create() {
     this.createAnimations();
     this.score = 0;
 
-    // 1. Setup World Bounds
+    // Setup World Bounds
     this.physics.world.setBounds(0, 0, this.currentLevel.width, this.currentLevel.height);
 
-    // 2. Create Platforms
+    // Create Platforms
     this.platforms = this.physics.add.staticGroup();
 
-    // Create Level Platforms
-    this.currentLevel.platforms.forEach(p => {
-       if (p.type === 'platform') {
-           // Simple platform (using tile frame 1)
-           this.platforms.create(p.x, p.y, 'tiles', 1).setScale(5, 1).refreshBody();
-       } else {
-           // Ground or default
-           this.platforms.create(p.x, p.y, 'tiles', 0).refreshBody();
-       }
+    this.currentLevel.platforms.forEach((p) => {
+      if (p.type === "platform") {
+        this.platforms.create(p.x, p.y, "tiles", 1).setScale(5, 1).refreshBody();
+      } else {
+        this.platforms.create(p.x, p.y, "tiles", 0).refreshBody();
+      }
     });
 
-    // Fill floor for safety if not defined in level
+    // Floor
     for (let x = 0; x < this.currentLevel.width; x += 32) {
-        this.platforms.create(x + 16, this.currentLevel.height - 16, 'tiles', 0).refreshBody();
+      this.platforms.create(x + 16, this.currentLevel.height - 16, "tiles", 0).refreshBody();
     }
 
-    // 3. Create Players
-    // In Multiplayer:
-    // - If Host: Player 1 is ME (controlled), Player 2 is PEER (networked).
-    // - If Client: Player 2 is ME (controlled), Player 1 is PEER (networked).
-    // - If Local Co-op (Single Browser): Player 1 and 2 are both local.
-    
-    let p1Controlled = true;
-    let p2Controlled = true; // Default local co-op
-    
-    if (this.isMultiplayer) {
-        if (this.isHost) {
-            p1Controlled = true; // Host controls P1
-            p2Controlled = false; // P2 is remote
-        } else {
-            p1Controlled = false; // P1 is remote
-            p2Controlled = true; // Client controls P2
-        }
-    }
+    // Create Players
+    this.createPlayers();
 
-    this.player = new Player(this, 100, this.currentLevel.height - 150, 1); // P1
-    this.player.setCollideWorldBounds(true);
-    // We need to disable local input if remote
-    if (!p1Controlled) {
-        this.player.disableLocalInput(); // Need to add this method
-    }
-    
-    // Always create P2 if multiplayer or local co-op
-    if (this.isMultiplayer || true) { // Assuming default local co-op enabled if not online
-        this.player2 = new Player(this, 150, this.currentLevel.height - 150, 2); // P2
-        this.player2.setCollideWorldBounds(true);
-        this.player2.setTint(0xaaffaa);
-        
-        if (!p2Controlled && this.isMultiplayer) {
-            this.player2.disableLocalInput();
-        }
-    }
-
-    // 4. Create Enemies
+    // Create Enemies
     this.enemies = this.add.group({
-        classType: Enemy,
-        runChildUpdate: true
+      classType: Enemy,
+      runChildUpdate: true,
     });
 
-    this.currentLevel.enemies.forEach(e => {
-        const enemy = new Enemy(this, e.x, e.y, e.range);
-        this.enemies.add(enemy);
+    this.currentLevel.enemies.forEach((e) => {
+      const enemy = new Enemy(this, e.x, e.y, e.range);
+      this.enemies.add(enemy);
     });
 
-    // 5. Create Collectibles (Eggs)
+    // Create Eggs
     this.eggs = this.add.group({
-        classType: Egg,
-        runChildUpdate: false
+      classType: Egg,
+      runChildUpdate: false,
     });
-    
-    this.currentLevel.eggs.forEach(egg => {
-        this.eggs.add(new Egg(this, egg.x, egg.y));
+
+    this.currentLevel.eggs.forEach((egg) => {
+      this.eggs.add(new Egg(this, egg.x, egg.y));
     });
-    
-    // 6. Create PowerUps
+
+    // Create PowerUps
     this.powerups = this.add.group({
-        classType: PowerUp,
-        runChildUpdate: false
-    });
-    
-    this.currentLevel.powerups.forEach(p => {
-        this.powerups.add(new PowerUp(this, p.x, p.y, p.type));
+      classType: PowerUp,
+      runChildUpdate: false,
     });
 
-    // 7. Colliders
-    this.physics.add.collider(this.player, this.platforms);
-    if (this.player2) this.physics.add.collider(this.player2, this.platforms);
-    this.physics.add.collider(this.enemies, this.platforms);
-    
-    // Overlaps
-    this.physics.add.overlap(this.player.attackHitbox, this.enemies, this.handleAttackEnemy, undefined, this);
-    this.physics.add.overlap(this.player, this.enemies, this.handlePlayerEnemyCollision, undefined, this);
-    this.physics.add.overlap(this.player, this.eggs, this.collectEgg, undefined, this);
-    this.physics.add.overlap(this.player, this.powerups, this.collectPowerUp, undefined, this);
+    this.currentLevel.powerups.forEach((p) => {
+      this.powerups.add(new PowerUp(this, p.x, p.y, p.type));
+    });
 
-    if (this.player2) {
-        this.physics.add.overlap(this.player2.attackHitbox, this.enemies, this.handleAttackEnemy, undefined, this);
-        this.physics.add.overlap(this.player2, this.enemies, this.handlePlayerEnemyCollision, undefined, this);
-        this.physics.add.overlap(this.player2, this.eggs, this.collectEgg, undefined, this);
-        this.physics.add.overlap(this.player2, this.powerups, this.collectPowerUp, undefined, this);
-    }
-    
+    // Setup Colliders
+    this.setupColliders();
+
     // Exit
-    const exit = this.physics.add.staticImage(this.currentLevel.exit.x, this.currentLevel.exit.y, 'exit');
-    this.physics.add.overlap(this.player, exit, this.reachExit, undefined, this);
-    if (this.player2) this.physics.add.overlap(this.player2, exit, this.reachExit, undefined, this);
-    
-    // 8. Camera
+    const exit = this.physics.add.staticImage(
+      this.currentLevel.exit.x,
+      this.currentLevel.exit.y,
+      "exit"
+    );
+    this.physics.add.overlap(this.localPlayer, exit, this.reachExit, undefined, this);
+
+    // Camera
     this.cameras.main.setBounds(0, 0, this.currentLevel.width, this.currentLevel.height);
-    // Follow the "local" player
-    if (this.isMultiplayer && !this.isHost && this.player2) {
-        this.cameras.main.startFollow(this.player2, true, 0.08, 0.08);
-    } else {
-        this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
-    }
+    this.cameras.main.startFollow(this.localPlayer, true, 0.08, 0.08);
 
     // UI
-    this.scoreText = this.add.text(16, 48, 'Score: 0', {
-      fontSize: '24px',
-      color: '#ffffff'
-    }).setScrollFactor(0);
+    this.scoreText = this.add
+      .text(16, 48, "Score: 0", {
+        fontSize: "24px",
+        color: "#ffffff",
+      })
+      .setScrollFactor(0);
 
-    this.add.text(16, 16, `Level ${this.currentLevel.id}: ${this.currentLevel.name}`, {
-      fontSize: '18px',
-      color: '#ffff00',
-      backgroundColor: '#000000'
-    }).setScrollFactor(0);
-    
+    this.add
+      .text(16, 16, `Level ${this.currentLevel.id}: ${this.currentLevel.name}`, {
+        fontSize: "18px",
+        color: "#ffff00",
+        backgroundColor: "#000000",
+      })
+      .setScrollFactor(0);
+
     // Theme adjustments
-    if (this.currentLevel.theme === 'ice') {
-        this.cameras.main.setBackgroundColor('#e0f7fa'); // Light blue
-    } else if (this.currentLevel.theme === 'space') {
-        this.cameras.main.setBackgroundColor('#0d001a'); // Dark purple
-        // Add simple stars
-        for(let i=0; i<100; i++) {
-            this.add.circle(Math.random() * this.currentLevel.width, Math.random() * this.currentLevel.height, 1, 0xffffff);
-        }
-    } else {
-        this.cameras.main.setBackgroundColor('#000000');
-    }
+    this.applyTheme();
 
-    // Network Events
+    // Setup network listeners for multiplayer
     if (this.isMultiplayer) {
-        networkManager.onDataReceived = (data) => {
-            if (data.type === 'PLAYER_UPDATE') {
-                const targetPlayer = this.isHost ? this.player2 : this.player;
-                if (targetPlayer) {
-                    targetPlayer.setPosition(data.x, data.y);
-                    targetPlayer.setFlipX(data.flipX);
-                    if (data.anim) {
-                        targetPlayer.play(data.anim, true);
-                    }
-                }
-            }
+      this.setupNetworkListeners();
+    }
+  }
+
+  private createPlayers() {
+    if (this.isMultiplayer) {
+      // Find my player number
+      const myPlayerNumber = networkManager.myPlayerNumber;
+
+      // Create local player at appropriate spawn position
+      const spawnX = 100 + (myPlayerNumber - 1) * 50;
+      this.localPlayer = new Player(this, spawnX, this.currentLevel.height - 150, myPlayerNumber);
+      this.localPlayer.setCollideWorldBounds(true);
+      this.localPlayer.setTint(PLAYER_COLORS[myPlayerNumber - 1]);
+
+      // Create remote players
+      networkManager.getOtherPlayers().forEach((p) => {
+        this.createRemotePlayer(p);
+      });
+    } else {
+      // Single player or local co-op
+      this.localPlayer = new Player(this, 100, this.currentLevel.height - 150, 1);
+      this.localPlayer.setCollideWorldBounds(true);
+    }
+  }
+
+  private createRemotePlayer(playerState: PlayerState): Player {
+    const remotePlayer = new Player(
+      this,
+      playerState.x,
+      playerState.y,
+      playerState.playerNumber
+    );
+    remotePlayer.setCollideWorldBounds(true);
+    remotePlayer.setTint(PLAYER_COLORS[playerState.playerNumber - 1]);
+    remotePlayer.disableLocalInput();
+
+    this.remotePlayers.set(playerState.id, remotePlayer);
+
+    // Add colliders for remote player
+    this.physics.add.collider(remotePlayer, this.platforms);
+    this.physics.add.overlap(
+      remotePlayer.attackHitbox,
+      this.enemies,
+      this.handleAttackEnemy,
+      undefined,
+      this
+    );
+    this.physics.add.overlap(
+      remotePlayer,
+      this.enemies,
+      this.handlePlayerEnemyCollision,
+      undefined,
+      this
+    );
+    this.physics.add.overlap(remotePlayer, this.eggs, this.collectEgg, undefined, this);
+    this.physics.add.overlap(
+      remotePlayer,
+      this.powerups,
+      this.collectPowerUp,
+      undefined,
+      this
+    );
+
+    return remotePlayer;
+  }
+
+  private setupColliders() {
+    // Local player colliders
+    this.physics.add.collider(this.localPlayer, this.platforms);
+    this.physics.add.collider(this.enemies, this.platforms);
+
+    this.physics.add.overlap(
+      this.localPlayer.attackHitbox,
+      this.enemies,
+      this.handleAttackEnemy,
+      undefined,
+      this
+    );
+    this.physics.add.overlap(
+      this.localPlayer,
+      this.enemies,
+      this.handlePlayerEnemyCollision,
+      undefined,
+      this
+    );
+    this.physics.add.overlap(this.localPlayer, this.eggs, this.collectEgg, undefined, this);
+    this.physics.add.overlap(
+      this.localPlayer,
+      this.powerups,
+      this.collectPowerUp,
+      undefined,
+      this
+    );
+  }
+
+  private setupNetworkListeners() {
+    // Handle player position updates
+    networkManager.on("playerUpdate", (data) => {
+      let remotePlayer = this.remotePlayers.get(data.playerId);
+
+      // Create player if they don't exist yet
+      if (!remotePlayer) {
+        const playerState: PlayerState = {
+          id: data.playerId,
+          playerNumber: data.playerNumber,
+          x: data.x,
+          y: data.y,
+          flipX: data.flipX,
+          anim: data.anim,
+          isReady: true,
         };
+        remotePlayer = this.createRemotePlayer(playerState);
+      }
+
+      // Update remote player position
+      remotePlayer.setPosition(data.x, data.y);
+      remotePlayer.setFlipX(data.flipX);
+      if (data.anim) {
+        remotePlayer.play(data.anim, true);
+      }
+    });
+
+    // Handle player joining mid-game
+    networkManager.on("playerJoined", (data) => {
+      if (!this.remotePlayers.has(data.player.id)) {
+        this.createRemotePlayer(data.player);
+      }
+    });
+
+    // Handle player leaving
+    networkManager.on("playerLeft", (data) => {
+      const remotePlayer = this.remotePlayers.get(data.playerId);
+      if (remotePlayer) {
+        remotePlayer.destroy();
+        this.remotePlayers.delete(data.playerId);
+      }
+    });
+
+    // Handle game events from other players
+    networkManager.on("gameEvent", (data) => {
+      switch (data.event) {
+        case "ENEMY_KILLED":
+          // Find and destroy the enemy (by position for now)
+          break;
+        case "EGG_COLLECTED":
+          // Sync egg collection
+          break;
+      }
+    });
+
+    // Handle disconnection
+    networkManager.on("disconnected", () => {
+      // Show disconnection message and return to menu
+      this.add
+        .text(
+          this.cameras.main.width / 2,
+          this.cameras.main.height / 2,
+          "Disconnected!",
+          {
+            fontSize: "32px",
+            color: "#ff0000",
+            backgroundColor: "#000000",
+          }
+        )
+        .setOrigin(0.5)
+        .setScrollFactor(0);
+
+      this.time.delayedCall(2000, () => {
+        this.scene.start("MenuScene");
+      });
+    });
+  }
+
+  private applyTheme() {
+    if (this.currentLevel.theme === "ice") {
+      this.cameras.main.setBackgroundColor("#e0f7fa");
+    } else if (this.currentLevel.theme === "space") {
+      this.cameras.main.setBackgroundColor("#0d001a");
+      for (let i = 0; i < 100; i++) {
+        this.add.circle(
+          Math.random() * this.currentLevel.width,
+          Math.random() * this.currentLevel.height,
+          1,
+          0xffffff
+        );
+      }
+    } else {
+      this.cameras.main.setBackgroundColor("#000000");
     }
   }
 
   private createAnimations() {
-    if (this.anims.exists('dino-idle')) return; // Already created
+    if (this.anims.exists("dino-idle")) return;
 
-    // Dino Anims
     this.anims.create({
-        key: 'dino-idle',
-        frames: this.anims.generateFrameNumbers('player', { start: 0, end: 0 }),
-        frameRate: 10,
-        repeat: -1
+      key: "dino-idle",
+      frames: this.anims.generateFrameNumbers("player", { start: 0, end: 0 }),
+      frameRate: 10,
+      repeat: -1,
     });
     this.anims.create({
-        key: 'dino-run',
-        frames: this.anims.generateFrameNumbers('player', { start: 1, end: 2 }),
-        frameRate: 8,
-        repeat: -1
+      key: "dino-run",
+      frames: this.anims.generateFrameNumbers("player", { start: 1, end: 2 }),
+      frameRate: 8,
+      repeat: -1,
     });
     this.anims.create({
-        key: 'dino-jump',
-        frames: this.anims.generateFrameNumbers('player', { start: 3, end: 3 }),
-        frameRate: 1,
-        repeat: -1
+      key: "dino-jump",
+      frames: this.anims.generateFrameNumbers("player", { start: 3, end: 3 }),
+      frameRate: 1,
+      repeat: -1,
     });
     this.anims.create({
-        key: 'dino-attack',
-        frames: this.anims.generateFrameNumbers('player', { start: 4, end: 4 }),
-        frameRate: 10,
-        repeat: 0
+      key: "dino-attack",
+      frames: this.anims.generateFrameNumbers("player", { start: 4, end: 4 }),
+      frameRate: 10,
+      repeat: 0,
     });
-    
-    // Enemy Anims
+
     this.anims.create({
-        key: 'enemy-walk',
-        frames: this.anims.generateFrameNumbers('enemy', { start: 0, end: 1 }),
-        frameRate: 6,
-        repeat: -1
+      key: "enemy-walk",
+      frames: this.anims.generateFrameNumbers("enemy", { start: 0, end: 1 }),
+      frameRate: 6,
+      repeat: -1,
     });
   }
 
   update() {
-    this.player.update();
-    if (this.player2) this.player2.update();
-    
-    // Multiplayer Sync (Send my position)
-    if (this.isMultiplayer) {
-        const myPlayer = this.isHost ? this.player : this.player2;
-        if (myPlayer) {
-            networkManager.send({
-                type: 'PLAYER_UPDATE',
-                x: myPlayer.x,
-                y: myPlayer.y,
-                flipX: myPlayer.flipX,
-                anim: myPlayer.anims.currentAnim?.key
-            });
-        }
+    this.localPlayer.update();
+
+    // Update remote players
+    this.remotePlayers.forEach((player) => {
+      player.update();
+    });
+
+    // Send position update in multiplayer
+    if (this.isMultiplayer && networkManager.isConnected) {
+      networkManager.sendPlayerUpdate(
+        this.localPlayer.x,
+        this.localPlayer.y,
+        this.localPlayer.flipX,
+        this.localPlayer.anims.currentAnim?.key || "dino-idle"
+      );
     }
 
-    // Simple restart if falls out of world
-    const floorY = this.currentLevel.height;
-    if (this.player.y > floorY || (this.player2 && this.player2.y > floorY)) {
-        this.scene.restart();
+    // Check if fell out of world
+    if (this.localPlayer.y > this.currentLevel.height) {
+      this.scene.restart();
     }
   }
 
-  private handleAttackEnemy(hitbox: any, enemy: any) {
+  private handleAttackEnemy(_hitbox: any, enemy: any) {
     if ((enemy as Enemy).active) {
-        (enemy as Enemy).destroy();
-        this.score += 20;
-        this.scoreText.setText('Score: ' + this.score);
+      (enemy as Enemy).destroy();
+      this.score += 20;
+      this.scoreText.setText("Score: " + this.score);
+
+      // Broadcast event in multiplayer
+      if (this.isMultiplayer) {
+        networkManager.sendGameEvent("ENEMY_KILLED", {
+          x: enemy.x,
+          y: enemy.y,
+        });
+      }
     }
   }
 
-  private handlePlayerEnemyCollision(player: any, enemy: any) {
-    // console.log('Player hit!');
+  private handlePlayerEnemyCollision(_player: any, _enemy: any) {
     this.scene.restart();
   }
-  
-  private collectEgg(player: any, egg: any) {
+
+  private collectEgg(_player: any, egg: any) {
     (egg as Egg).destroy();
     this.score += 10;
-    this.scoreText.setText('Score: ' + this.score);
+    this.scoreText.setText("Score: " + this.score);
+
+    if (this.isMultiplayer) {
+      networkManager.sendGameEvent("EGG_COLLECTED", {
+        x: egg.x,
+        y: egg.y,
+      });
+    }
   }
-  
+
   private collectPowerUp(player: any, powerup: any) {
     const p = powerup as PowerUp;
     const pl = player as Player;
     pl.activatePowerUp(p.type);
     p.destroy();
   }
-  
-  private reachExit(player: any, exit: any) {
-      this.physics.pause();
-      
-      // Unlock next level
-      const nextLevel = this.currentLevel.id + 1;
-      const currentUnlocked = parseInt(localStorage.getItem('dino_unlocked_level') || '1', 10);
-      if (nextLevel > currentUnlocked) {
-          localStorage.setItem('dino_unlocked_level', nextLevel.toString());
-      }
 
-      this.add.text(this.cameras.main.width / 2 + this.cameras.main.scrollX, this.cameras.main.height / 2, 'LEVEL COMPLETE\nScore: ' + this.score, {
-          fontSize: '48px',
-          color: '#ffffff',
-          align: 'center',
-          backgroundColor: '#000000'
-      }).setOrigin(0.5);
-      
-      this.time.delayedCall(3000, () => {
-          this.scene.start('LevelSelectScene', { isMultiplayer: this.isMultiplayer, isHost: this.isHost });
-      });
+  private reachExit(_player: any, _exit: any) {
+    this.physics.pause();
+
+    const nextLevel = this.currentLevel.id + 1;
+    const currentUnlocked = parseInt(
+      localStorage.getItem("dino_unlocked_level") || "1",
+      10
+    );
+    if (nextLevel > currentUnlocked) {
+      localStorage.setItem("dino_unlocked_level", nextLevel.toString());
+    }
+
+    this.add
+      .text(
+        this.cameras.main.width / 2 + this.cameras.main.scrollX,
+        this.cameras.main.height / 2,
+        "LEVEL COMPLETE\nScore: " + this.score,
+        {
+          fontSize: "48px",
+          color: "#ffffff",
+          align: "center",
+          backgroundColor: "#000000",
+        }
+      )
+      .setOrigin(0.5);
+
+    this.time.delayedCall(3000, () => {
+      if (this.isMultiplayer) {
+        networkManager.disconnect();
+      }
+      this.scene.start("MenuScene");
+    });
   }
 }
