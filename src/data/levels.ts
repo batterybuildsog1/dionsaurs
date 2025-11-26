@@ -8,6 +8,8 @@ export interface LevelData {
   enemies: { x: number; y: number; range: number }[];
   eggs: { x: number; y: number }[];
   powerups: { x: number; y: number; type: 'speed' | 'invincible' }[];
+  checkpoints?: { x: number; y: number }[];
+  lives?: { x: number; y: number }[];
   exit: { x: number; y: number };
 }
 
@@ -37,6 +39,13 @@ export const LEVELS: LevelData[] = [
     ],
     powerups: [
       { x: 700, y: 450, type: 'speed' }
+    ],
+    checkpoints: [
+      { x: 500, y: 450 },
+      { x: 1000, y: 350 }
+    ],
+    lives: [
+      { x: 1200, y: 200 }
     ],
     exit: { x: 1550, y: 550 }
   },
@@ -70,6 +79,15 @@ export const LEVELS: LevelData[] = [
     ],
     powerups: [
       { x: 900, y: 350, type: 'speed' }
+    ],
+    checkpoints: [
+      { x: 500, y: 500 },
+      { x: 1000, y: 400 },
+      { x: 1500, y: 300 }
+    ],
+    lives: [
+      { x: 800, y: 150 },
+      { x: 1600, y: 200 }
     ],
     exit: { x: 1950, y: 550 }
   },
@@ -105,6 +123,15 @@ export const LEVELS: LevelData[] = [
     powerups: [
       { x: 1000, y: 200, type: 'speed' },
       { x: 1800, y: 300, type: 'speed' }
+    ],
+    checkpoints: [
+      { x: 600, y: 650 },
+      { x: 1200, y: 500 },
+      { x: 1800, y: 400 }
+    ],
+    lives: [
+      { x: 1000, y: 150 },
+      { x: 2000, y: 250 }
     ],
     exit: { x: 2350, y: 700 }
   }

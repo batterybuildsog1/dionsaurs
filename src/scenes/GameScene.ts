@@ -35,6 +35,11 @@ export class GameScene extends Phaser.Scene {
   private lastNetworkUpdateTime: number = 0;
   private networkUpdateInterval: number = 100; // milliseconds between updates
 
+  // Multiplayer exit synchronization
+  private playersAtExit: Set<string> = new Set();
+  private levelCompleteShown: boolean = false;
+  private waitingOverlay?: Phaser.GameObjects.Container;
+
   constructor() {
     super("GameScene");
     this.currentLevel = LEVELS[0];
@@ -48,6 +53,11 @@ export class GameScene extends Phaser.Scene {
 
     // Clear any previous remote players
     this.remotePlayers.clear();
+
+    // Reset exit synchronization state
+    this.playersAtExit.clear();
+    this.levelCompleteShown = false;
+    this.waitingOverlay = undefined;
   }
 
   preload() {
@@ -393,6 +403,24 @@ export class GameScene extends Phaser.Scene {
           break;
         case "EGG_COLLECTED":
           // Sync egg collection
+          break;
+        case "PLAYER_AT_EXIT":
+          // Remote player reached the exit
+          this.playersAtExit.add(data.data.playerId);
+          this.checkAllPlayersAtExit();
+          break;
+        case "ALL_AT_EXIT":
+          // All players reached exit - show completion UI
+          if (!this.levelCompleteShown) {
+            this.showLevelComplete();
+          }
+          break;
+        case "NEXT_LEVEL":
+          // Host is starting next level - follow them
+          this.scene.start("GameScene", {
+            levelId: data.data.levelId,
+            isMultiplayer: true,
+          });
           break;
       }
     });
@@ -744,6 +772,97 @@ export class GameScene extends Phaser.Scene {
   }
 
   private reachExit(_player: any, _exit: any) {
+    // Prevent multiple triggers
+    if (this.levelCompleteShown) return;
+
+    // In multiplayer, we need all players to reach the exit
+    if (this.isMultiplayer) {
+      // Add ourselves to the players at exit
+      const myId = networkManager.myPlayerId;
+      if (!this.playersAtExit.has(myId)) {
+        this.playersAtExit.add(myId);
+
+        // Broadcast that we reached the exit
+        networkManager.sendGameEvent("PLAYER_AT_EXIT", { playerId: myId });
+
+        // Show waiting overlay
+        this.showWaitingOverlay();
+
+        // Check if all players are at exit
+        this.checkAllPlayersAtExit();
+      }
+      return;
+    }
+
+    // Single player - show completion immediately
+    this.showLevelComplete();
+  }
+
+  private showWaitingOverlay() {
+    // Don't show if already showing or level complete
+    if (this.waitingOverlay || this.levelCompleteShown) return;
+
+    const cx = this.cameras.main.width / 2;
+    const cy = this.cameras.main.height / 2;
+
+    this.waitingOverlay = this.add.container(cx, cy);
+    this.waitingOverlay.setScrollFactor(0);
+
+    // Semi-transparent background
+    const bg = this.add.rectangle(0, 0, 350, 120, 0x000000, 0.8);
+
+    // "Waiting" text
+    const waitText = this.add.text(0, -20, "At the Exit!", {
+      fontSize: "28px",
+      color: "#4CAF50",
+      fontStyle: "bold",
+    }).setOrigin(0.5);
+
+    const statusText = this.add.text(0, 20, "Waiting for other players...", {
+      fontSize: "18px",
+      color: "#ffffff",
+    }).setOrigin(0.5);
+
+    // Pulsing animation
+    this.tweens.add({
+      targets: statusText,
+      alpha: 0.5,
+      duration: 500,
+      yoyo: true,
+      repeat: -1,
+    });
+
+    this.waitingOverlay.add([bg, waitText, statusText]);
+  }
+
+  private checkAllPlayersAtExit() {
+    if (this.levelCompleteShown) return;
+
+    // Get total player count
+    const totalPlayers = networkManager.getAllPlayers().length;
+    const playersAtExitCount = this.playersAtExit.size;
+
+    // Check if all players have reached the exit
+    if (playersAtExitCount >= totalPlayers) {
+      // Host broadcasts that everyone made it
+      if (networkManager.isHost) {
+        networkManager.sendGameEvent("ALL_AT_EXIT", {});
+      }
+      // Show level complete for everyone
+      this.showLevelComplete();
+    }
+  }
+
+  private showLevelComplete() {
+    if (this.levelCompleteShown) return;
+    this.levelCompleteShown = true;
+
+    // Remove waiting overlay if present
+    if (this.waitingOverlay) {
+      this.waitingOverlay.destroy();
+      this.waitingOverlay = undefined;
+    }
+
     this.physics.pause();
 
     const nextLevelId = this.currentLevel.id + 1;
@@ -758,11 +877,8 @@ export class GameScene extends Phaser.Scene {
       localStorage.setItem("dino_unlocked_level", nextLevelId.toString());
     }
 
-    const cx = this.cameras.main.width / 2 + this.cameras.main.scrollX;
-    const cy = this.cameras.main.height / 2 + this.cameras.main.scrollY;
-
     // Dark overlay
-    const overlay = this.add.rectangle(cx, cy, 500, 350, 0x000000, 0.85);
+    const overlay = this.add.rectangle(0, 0, 500, 350, 0x000000, 0.85);
     overlay.setScrollFactor(0);
     overlay.setPosition(this.cameras.main.width / 2, this.cameras.main.height / 2);
 
@@ -786,31 +902,66 @@ export class GameScene extends Phaser.Scene {
     if (hasNextLevel) {
       const nextLevelName = LEVELS[nextLevelId - 1]?.name || `Level ${nextLevelId}`;
 
-      const continueBtn = this.add.rectangle(
-        this.cameras.main.width / 2,
-        this.cameras.main.height / 2 + 30,
-        280, 50, 0x4CAF50
-      ).setScrollFactor(0).setInteractive({ useHandCursor: true });
+      // In multiplayer, only host can continue
+      if (this.isMultiplayer) {
+        if (networkManager.isHost) {
+          // Host sees the Continue button
+          const continueBtn = this.add.rectangle(
+            this.cameras.main.width / 2,
+            this.cameras.main.height / 2 + 30,
+            280, 50, 0x4CAF50
+          ).setScrollFactor(0).setInteractive({ useHandCursor: true });
 
-      this.add.text(
-        this.cameras.main.width / 2,
-        this.cameras.main.height / 2 + 30,
-        `Continue to ${nextLevelName}`,
-        { fontSize: "20px", color: "#ffffff", fontStyle: "bold" }
-      ).setOrigin(0.5).setScrollFactor(0);
+          this.add.text(
+            this.cameras.main.width / 2,
+            this.cameras.main.height / 2 + 30,
+            `Continue to ${nextLevelName}`,
+            { fontSize: "20px", color: "#ffffff", fontStyle: "bold" }
+          ).setOrigin(0.5).setScrollFactor(0);
 
-      continueBtn.on('pointerover', () => continueBtn.setFillStyle(0x66BB6A));
-      continueBtn.on('pointerout', () => continueBtn.setFillStyle(0x4CAF50));
-      continueBtn.on('pointerdown', () => {
-        // In multiplayer, host broadcasts next level to all players
-        if (this.isMultiplayer && networkManager.isHost) {
-          networkManager.sendGameEvent("NEXT_LEVEL", { levelId: nextLevelId });
+          continueBtn.on('pointerover', () => continueBtn.setFillStyle(0x66BB6A));
+          continueBtn.on('pointerout', () => continueBtn.setFillStyle(0x4CAF50));
+          continueBtn.on('pointerdown', () => {
+            // Broadcast next level to all players
+            networkManager.sendGameEvent("NEXT_LEVEL", { levelId: nextLevelId });
+            this.scene.start("GameScene", {
+              levelId: nextLevelId,
+              isMultiplayer: true,
+            });
+          });
+        } else {
+          // Non-host sees waiting message
+          this.add.text(
+            this.cameras.main.width / 2,
+            this.cameras.main.height / 2 + 30,
+            "Waiting for host to continue...",
+            { fontSize: "18px", color: "#aaaaaa" }
+          ).setOrigin(0.5).setScrollFactor(0);
         }
-        this.scene.start("GameScene", {
-          levelId: nextLevelId,
-          isMultiplayer: this.isMultiplayer,
+      } else {
+        // Single player - normal Continue button
+        const continueBtn = this.add.rectangle(
+          this.cameras.main.width / 2,
+          this.cameras.main.height / 2 + 30,
+          280, 50, 0x4CAF50
+        ).setScrollFactor(0).setInteractive({ useHandCursor: true });
+
+        this.add.text(
+          this.cameras.main.width / 2,
+          this.cameras.main.height / 2 + 30,
+          `Continue to ${nextLevelName}`,
+          { fontSize: "20px", color: "#ffffff", fontStyle: "bold" }
+        ).setOrigin(0.5).setScrollFactor(0);
+
+        continueBtn.on('pointerover', () => continueBtn.setFillStyle(0x66BB6A));
+        continueBtn.on('pointerout', () => continueBtn.setFillStyle(0x4CAF50));
+        continueBtn.on('pointerdown', () => {
+          this.scene.start("GameScene", {
+            levelId: nextLevelId,
+            isMultiplayer: false,
+          });
         });
-      });
+      }
     }
 
     // Back to Menu button

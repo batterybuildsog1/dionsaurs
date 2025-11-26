@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { GameState } from '../services/GameState';
 
 export class MenuScene extends Phaser.Scene {
   constructor() {
@@ -28,6 +29,7 @@ export class MenuScene extends Phaser.Scene {
     // Play Solo Button
     const soloBtn = this.createButton(width / 2, 300, 'Play Solo', '#4CAF50');
     soloBtn.on('pointerdown', () => {
+      GameState.reset();
       this.scene.start('GameScene', { isMultiplayer: false });
     });
 
