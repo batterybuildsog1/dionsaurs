@@ -276,6 +276,13 @@ class NetworkManager {
   public getPlayerCount(): number {
     return this.players.size;
   }
+
+  // Get shareable URL for current room
+  public getShareableUrl(): string {
+    if (!this.roomId) return "";
+    const baseUrl = window.location.origin + window.location.pathname;
+    return `${baseUrl}?room=${this.roomId}`;
+  }
 }
 
 export const networkManager = new NetworkManager();
