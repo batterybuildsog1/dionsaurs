@@ -8,6 +8,7 @@ import { LifePickup } from "../objects/LifePickup";
 import { LEVELS, LevelData } from "../data/levels";
 import { networkManager, PlayerState } from "../services/NetworkManager";
 import { GameState } from "../services/GameState";
+import { audioManager } from "../services/AudioManager";
 
 // Player colors for visual distinction
 const PLAYER_COLORS = [0x88ff88, 0xff8888, 0x8888ff, 0xffff88];
@@ -35,6 +36,11 @@ export class GameScene extends Phaser.Scene {
   private lastNetworkUpdateTime: number = 0;
   private networkUpdateInterval: number = 33; // milliseconds between updates (30/sec)
 
+  // Tween management - CRITICAL: prevents tween accumulation memory leak
+  private remotePlayerTweens: Map<string, Phaser.Tweens.Tween> = new Map();
+  private remotePlayerLastPos: Map<string, { x: number; y: number }> = new Map();
+  private readonly POSITION_THRESHOLD: number = 0.5; // Only tween if moved more than 0.5 pixels
+
   // Multiplayer exit synchronization
   private playersAtExit: Set<string> = new Set();
   private levelCompleteShown: boolean = false;
@@ -48,13 +54,28 @@ export class GameScene extends Phaser.Scene {
   }
 
   init(data: { levelId?: number; isMultiplayer?: boolean; players?: PlayerState[] }) {
-    if (data.levelId) {
-      this.currentLevel = LEVELS.find((l) => l.id === data.levelId) || LEVELS[0];
-    }
-    this.isMultiplayer = data.isMultiplayer || false;
+    // Always reset to level 1 first, then update if levelId is provided
+    // This ensures clean state on scene restart
+    this.currentLevel = LEVELS[0];
 
-    // Clear any previous remote players
+    if (data && data.levelId) {
+      const foundLevel = LEVELS.find((l) => l.id === data.levelId);
+      if (foundLevel) {
+        this.currentLevel = foundLevel;
+        console.log(`[LEVEL] Loading level ${data.levelId}: ${foundLevel.name}`);
+      } else {
+        console.warn(`[LEVEL] Level ${data.levelId} not found in LEVELS array (length: ${LEVELS.length}), defaulting to level 1`);
+      }
+    } else {
+      console.log(`[LEVEL] No levelId provided, starting at level 1`);
+    }
+
+    this.isMultiplayer = data?.isMultiplayer || false;
+
+    // Clear any previous remote players and their tweens
     this.remotePlayers.clear();
+    this.remotePlayerTweens.clear();
+    this.remotePlayerLastPos.clear();
 
     // Reset exit synchronization state
     this.playersAtExit.clear();
@@ -62,6 +83,9 @@ export class GameScene extends Phaser.Scene {
     this.waitingOverlay = undefined;
     this.sceneShuttingDown = false;
     this.exitTriggered = false;
+
+    // Reset invincibility state
+    this.isInvincible = false;
   }
 
   preload() {
@@ -119,6 +143,9 @@ export class GameScene extends Phaser.Scene {
     // Ensure physics is active (may have been paused from previous level)
     this.physics.resume();
 
+    // Initialize audio system for this scene
+    audioManager.init(this);
+
     this.createAnimations();
     this.score = GameState.getScore();
     this._lastCheckpoint = null; // Reset checkpoint on level start
@@ -137,9 +164,15 @@ export class GameScene extends Phaser.Scene {
       }
     });
 
-    // Floor
+    // Floor - with pit/gap support
+    const pits = this.currentLevel.pits || [];
     for (let x = 0; x < this.currentLevel.width; x += 32) {
-      this.platforms.create(x + 16, this.currentLevel.height - 16, "tiles", 0).refreshBody();
+      const tileX = x + 16;
+      // Check if this tile falls within any pit
+      const inPit = pits.some(pit => tileX >= pit.start && tileX <= pit.end);
+      if (!inPit) {
+        this.platforms.create(tileX, this.currentLevel.height - 16, "tiles", 0).refreshBody();
+      }
     }
 
     // Create Players
@@ -152,7 +185,7 @@ export class GameScene extends Phaser.Scene {
     });
 
     this.currentLevel.enemies.forEach((e) => {
-      const enemy = new Enemy(this, e.x, e.y, e.range);
+      const enemy = new Enemy(this, e.x, e.y, e.range, e.enemyType || 'basic');
       this.enemies.add(enemy);
     });
 
@@ -241,6 +274,30 @@ export class GameScene extends Phaser.Scene {
     // Setup network listeners for multiplayer
     if (this.isMultiplayer) {
       this.setupNetworkListeners();
+    }
+
+    // CRITICAL: Clean up event handlers when scene shuts down
+    // This prevents handler accumulation causing memory leaks and duplicate events
+    this.events.on('shutdown', this.cleanupScene, this);
+    this.events.on('destroy', this.cleanupScene, this);
+  }
+
+  private cleanupScene() {
+    // Stop and REMOVE all remote player tweens (stop alone doesn't free memory)
+    this.remotePlayerTweens.forEach((tween) => {
+      if (tween) {
+        if (tween.isPlaying()) {
+          tween.stop();
+        }
+        tween.remove(); // CRITICAL: Actually remove from tween manager
+      }
+    });
+    this.remotePlayerTweens.clear();
+    this.remotePlayerLastPos.clear();
+
+    // Clear network event handlers to prevent accumulation
+    if (this.isMultiplayer) {
+      networkManager.clearHandlers();
     }
   }
 
@@ -349,6 +406,20 @@ export class GameScene extends Phaser.Scene {
       undefined,
       this
     );
+
+    // Setup projectile colliders for shooter enemies
+    this.enemies.getChildren().forEach((enemy) => {
+      const e = enemy as Enemy;
+      if (e.projectiles) {
+        this.physics.add.overlap(
+          this.localPlayer,
+          e.projectiles,
+          this.handleProjectileCollision,
+          undefined,
+          this
+        );
+      }
+    });
   }
 
   private setupNetworkListeners() {
@@ -371,15 +442,31 @@ export class GameScene extends Phaser.Scene {
         remotePlayer = this.createRemotePlayer(playerState);
       }
 
-      // Update remote player position with smooth interpolation
-      // Use tween for smooth movement instead of instant position snap
-      this.tweens.add({
-        targets: remotePlayer,
-        x: data.x,
-        y: data.y,
-        duration: 30, // Match the 33ms update interval for smooth motion
-        ease: 'Linear'
-      });
+      // Check if position changed enough to warrant a tween (avoid micro-movements)
+      const lastPos = this.remotePlayerLastPos.get(data.playerId);
+      const dx = lastPos ? Math.abs(data.x - lastPos.x) : Infinity;
+      const dy = lastPos ? Math.abs(data.y - lastPos.y) : Infinity;
+
+      if (dx > this.POSITION_THRESHOLD || dy > this.POSITION_THRESHOLD) {
+        // CRITICAL FIX: Stop existing tween before creating new one
+        // This prevents tween accumulation which causes lag and freezing
+        const existingTween = this.remotePlayerTweens.get(data.playerId);
+        if (existingTween && existingTween.isPlaying()) {
+          existingTween.stop();
+        }
+
+        // Create new tween and store reference
+        const newTween = this.tweens.add({
+          targets: remotePlayer,
+          x: data.x,
+          y: data.y,
+          duration: 30, // Match the 33ms update interval for smooth motion
+          ease: 'Linear'
+        });
+        this.remotePlayerTweens.set(data.playerId, newTween);
+        this.remotePlayerLastPos.set(data.playerId, { x: data.x, y: data.y });
+      }
+
       remotePlayer.setFlipX(data.flipX);
       if (data.anim) {
         remotePlayer.play(data.anim, true);
@@ -397,6 +484,17 @@ export class GameScene extends Phaser.Scene {
     networkManager.on("playerLeft", (data) => {
       const remotePlayer = this.remotePlayers.get(data.playerId);
       if (remotePlayer) {
+        // Clean up tween for this player (stop AND remove)
+        const tween = this.remotePlayerTweens.get(data.playerId);
+        if (tween) {
+          if (tween.isPlaying()) {
+            tween.stop();
+          }
+          tween.remove(); // CRITICAL: Free tween memory
+        }
+        this.remotePlayerTweens.delete(data.playerId);
+        this.remotePlayerLastPos.delete(data.playerId);
+
         remotePlayer.destroy();
         this.remotePlayers.delete(data.playerId);
       }
@@ -556,6 +654,27 @@ export class GameScene extends Phaser.Scene {
       player.update();
     });
 
+    // Magnet effect - attract nearby eggs to player
+    if (this.localPlayer.hasMagnet) {
+      const magnetRange = this.localPlayer.magnetRange;
+      this.eggs.getChildren().forEach((egg) => {
+        const e = egg as Egg;
+        if (!e.active) return;
+
+        const dx = this.localPlayer.x - e.x;
+        const dy = this.localPlayer.y - e.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance < magnetRange && distance > 10) {
+          // Move egg toward player - faster when closer
+          const speed = 200 * (1 - distance / magnetRange);
+          const angle = Math.atan2(dy, dx);
+          e.x += Math.cos(angle) * speed * 0.016;
+          e.y += Math.sin(angle) * speed * 0.016;
+        }
+      });
+    }
+
     // Send position update in multiplayer (THROTTLED to prevent flooding)
     if (this.isMultiplayer && networkManager.isConnected) {
       const now = Date.now();
@@ -577,26 +696,63 @@ export class GameScene extends Phaser.Scene {
   }
 
   private handleAttackEnemy(_hitbox: any, enemy: any) {
-    if ((enemy as Enemy).active) {
-      const enemyX = enemy.x;
-      const enemyY = enemy.y;
+    const e = enemy as Enemy;
+    if (!e.active) return;
 
-      (enemy as Enemy).destroy();
-      this.score += 20;
+    const enemyX = e.x;
+    const enemyY = e.y;
+
+    // Play hit sound
+    audioManager.play('hit');
+
+    // Apply damage - returns true if enemy died
+    const died = e.takeDamage();
+
+    if (died) {
+      // Score bonus based on enemy type
+      const scoreBonus = e.enemyType === 'tank' ? 50 : e.enemyType === 'shooter' ? 40 : 20;
+      this.score += scoreBonus;
       GameState.setScore(this.score);
       this.scoreText.setText("Score: " + this.score);
 
-      // 20% chance to drop a life pickup
-      if (Math.random() < 0.2) {
+      // Show floating score with red color for enemy kills
+      this.showFloatingScore(enemyX, enemyY, scoreBonus, '#ff4444');
+
+      // Clean up shooter projectiles before destroying
+      if (e.projectiles) {
+        e.projectiles.clear(true, true);
+      }
+
+      // Enemy death animation - squash, spin, and fade before destroy
+      e.setActive(false); // Stop enemy AI immediately
+      const enemyBody = e.body as Phaser.Physics.Arcade.Body;
+      if (enemyBody) {
+        enemyBody.setVelocity(0, 0);
+        enemyBody.setEnable(false);
+      }
+
+      this.tweens.add({
+        targets: e,
+        scaleX: 1.5,
+        scaleY: 0.2,
+        alpha: 0,
+        angle: 20,
+        y: enemyY + 10,
+        duration: 250,
+        ease: 'Cubic.out',
+        onComplete: () => e.destroy()
+      });
+
+      // 25% chance to drop a life pickup (higher for tougher enemies)
+      const dropChance = e.enemyType === 'tank' ? 0.4 : e.enemyType === 'shooter' ? 0.3 : 0.2;
+      if (Math.random() < dropChance) {
         const droppedLife = new LifePickup(this, enemyX, enemyY - 20);
         this.lifePickups.add(droppedLife);
 
-        // Make dropped life fall with gravity briefly
         const body = droppedLife.body as Phaser.Physics.Arcade.Body;
         body.setAllowGravity(true);
-        body.setVelocityY(-100); // Pop up first
+        body.setVelocityY(-100);
 
-        // Stop gravity after landing
         this.time.delayedCall(1000, () => {
           if (droppedLife.active) {
             body.setAllowGravity(false);
@@ -612,10 +768,54 @@ export class GameScene extends Phaser.Scene {
           y: enemyY,
         });
       }
+    } else {
+      // Enemy took damage but didn't die - give partial score
+      this.score += 5;
+      GameState.setScore(this.score);
+      this.scoreText.setText("Score: " + this.score);
     }
   }
 
-  private handlePlayerEnemyCollision(_player: any, _enemy: any) {
+  private handlePlayerEnemyCollision(player: any, _enemy: any) {
+    const p = player as Player;
+
+    // Check player invincibility powerup first
+    if (p.isInvincible) return;
+
+    // Check for shield - absorbs one hit
+    if (p.hasShield && p.useShield()) {
+      // Shield absorbed the hit, grant brief invincibility
+      this.isInvincible = true;
+      this.time.delayedCall(1000, () => {
+        this.isInvincible = false;
+      });
+      return;
+    }
+
+    // Check scene-level invincibility (post-respawn)
+    if (!this.isInvincible) {
+      this.handleDeath();
+    }
+  }
+
+  private handleProjectileCollision(player: any, projectile: any) {
+    const p = player as Player;
+
+    // Destroy the projectile
+    projectile.destroy();
+
+    // Check player invincibility powerup first
+    if (p.isInvincible) return;
+
+    // Check for shield - absorbs one hit
+    if (p.hasShield && p.useShield()) {
+      this.isInvincible = true;
+      this.time.delayedCall(1000, () => {
+        this.isInvincible = false;
+      });
+      return;
+    }
+
     if (!this.isInvincible) {
       this.handleDeath();
     }
@@ -623,6 +823,9 @@ export class GameScene extends Phaser.Scene {
 
   private handleDeath() {
     if (this.isInvincible) return; // Can't die during invincibility
+
+    // Play hurt sound
+    audioManager.play('hurt');
 
     const remainingLives = GameState.decrementLives();
     this.livesText.setText(`Lives: ${remainingLives}`);
@@ -871,16 +1074,48 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  // Floating score popup - rises and fades out for satisfying feedback
+  private showFloatingScore(x: number, y: number, points: number, color: string = '#ffff00') {
+    const text = points > 0 ? `+${points}` : points.toString();
+    this.showFloatingText(x, y, text, color);
+  }
+
+  // Generic floating text popup
+  private showFloatingText(x: number, y: number, text: string, color: string = '#ffffff') {
+    const popup = this.add.text(x, y - 20, text, {
+      fontSize: '20px',
+      color: color,
+      fontStyle: 'bold',
+      stroke: '#000000',
+      strokeThickness: 3
+    }).setOrigin(0.5);
+
+    this.tweens.add({
+      targets: popup,
+      y: y - 60,
+      alpha: 0,
+      duration: 800,
+      ease: 'Cubic.out',
+      onComplete: () => popup.destroy()
+    });
+  }
+
   private collectEgg(_player: any, egg: any) {
+    const eggX = egg.x;
+    const eggY = egg.y;
     (egg as Egg).destroy();
     this.score += 10;
     GameState.setScore(this.score);
     this.scoreText.setText("Score: " + this.score);
 
+    // Play collect sound and show floating score
+    audioManager.play('collect');
+    this.showFloatingScore(eggX, eggY, 10);
+
     if (this.isMultiplayer) {
       networkManager.sendGameEvent("EGG_COLLECTED", {
-        x: egg.x,
-        y: egg.y,
+        x: eggX,
+        y: eggY,
       });
     }
   }
@@ -890,12 +1125,21 @@ export class GameScene extends Phaser.Scene {
     const pl = player as Player;
     pl.activatePowerUp(p.type);
     p.destroy();
+
+    // Play powerup sound
+    audioManager.play('powerup');
   }
 
   private collectLife(_player: any, life: any) {
+    const lifeX = life.x;
+    const lifeY = life.y;
     (life as LifePickup).destroy();
     GameState.addLife();
     this.livesText.setText(`Lives: ${GameState.getLives()}`);
+
+    // Play collect sound and show floating "+1 UP"
+    audioManager.play('collect');
+    this.showFloatingText(lifeX, lifeY, '+1 UP', '#ff66ff');
 
     // Visual feedback - brief flash of UI
     this.tweens.add({
@@ -908,8 +1152,8 @@ export class GameScene extends Phaser.Scene {
 
     if (this.isMultiplayer) {
       networkManager.sendGameEvent("LIFE_COLLECTED", {
-        x: life.x,
-        y: life.y,
+        x: lifeX,
+        y: lifeY,
       });
     }
   }
@@ -1004,6 +1248,9 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.physics.pause();
+
+    // Play level complete sound
+    audioManager.play('levelcomplete');
 
     const nextLevelId = this.currentLevel.id + 1;
     const hasNextLevel = nextLevelId <= LEVELS.length;

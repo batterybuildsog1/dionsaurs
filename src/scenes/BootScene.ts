@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { audioManager } from '../services/AudioManager';
 
 export class BootScene extends Phaser.Scene {
   constructor() {
@@ -6,8 +7,8 @@ export class BootScene extends Phaser.Scene {
   }
 
   preload() {
-    // Load assets here later
-    // this.load.image('logo', 'assets/logo.png');
+    // Preload all game audio
+    audioManager.preload(this);
   }
 
   create() {

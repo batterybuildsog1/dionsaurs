@@ -26,11 +26,11 @@ export class MenuScene extends Phaser.Scene {
       color: '#888888',
     }).setOrigin(0.5);
 
-    // Play Solo Button
+    // Play Solo Button - goes to level select for single player
     const soloBtn = this.createButton(width / 2, 300, 'Play Solo', '#4CAF50');
     soloBtn.on('pointerdown', () => {
       GameState.reset();
-      this.scene.start('GameScene', { isMultiplayer: false });
+      this.scene.start('LevelSelectScene', { isMultiplayer: false, isHost: false });
     });
 
     // Play Online Button
