@@ -178,6 +178,7 @@ export class GameScene extends Phaser.Scene {
       this.localPlayer = new Player(this, spawnX, this.currentLevel.height - 150, myPlayerNumber);
       this.localPlayer.setCollideWorldBounds(true);
       this.localPlayer.setTint(PLAYER_COLORS[myPlayerNumber - 1]);
+      this.localPlayer.setOnlineMultiplayer(true); // Use primary controls (WASD) for all online players
 
       // Create remote players
       networkManager.getOtherPlayers().forEach((p) => {

@@ -16,6 +16,7 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
   private moveSpeed: number = 200;
   private hasSpeedBoost: boolean = false;
   private isRemote: boolean = false;
+  private isOnlineMultiplayer: boolean = false;
 
   public playerId: number;
   private nameText: Phaser.GameObjects.Text;
@@ -55,12 +56,20 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
       this.isRemote = true;
   }
 
+  public setOnlineMultiplayer(value: boolean) {
+      this.isOnlineMultiplayer = value;
+  }
+
   initInput() {
     if (this.scene.input.keyboard && !this.isRemote) {
-      this.cursors = this.scene.input.keyboard.createCursorKeys(); // Default arrows
+      this.cursors = this.scene.input.keyboard.createCursorKeys();
 
-      // P1: WASD + Space + J
-      if (this.playerId === 1) {
+      // Online multiplayer: ALL local players use primary controls (WASD)
+      // Local co-op: P1 uses WASD, P2+ uses arrows (sharing one keyboard)
+      const usePrimaryControls = this.isOnlineMultiplayer || this.playerId === 1;
+
+      if (usePrimaryControls) {
+        // Primary controls: WASD + Space + J
         this.wasd = this.scene.input.keyboard.addKeys({
             up: Phaser.Input.Keyboard.KeyCodes.W,
             left: Phaser.Input.Keyboard.KeyCodes.A,
@@ -69,17 +78,16 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
         }) as any;
         this.jumpKey = this.scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
         this.attackKey = this.scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.J);
-      } 
-      // P2: Arrows + Enter/Shift + K/L
-      else {
+      } else {
+        // Secondary controls for local co-op: Arrows + Enter + L
         this.wasd = {
             up: this.cursors.up as any,
             left: this.cursors.left as any,
             down: this.cursors.down as any,
             right: this.cursors.right as any
         };
-        this.jumpKey = this.scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER); 
-        this.attackKey = this.scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.L); 
+        this.jumpKey = this.scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER);
+        this.attackKey = this.scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.L);
       }
     }
   }
