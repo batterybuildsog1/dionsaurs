@@ -71,6 +71,9 @@ export class MenuScene extends Phaser.Scene {
       btnText.setScale(1);
     });
 
+    // Bind bg's event handler to container so container.on() works
+    (container as any).on = bg.on.bind(bg);
+
     return container;
   }
 }
