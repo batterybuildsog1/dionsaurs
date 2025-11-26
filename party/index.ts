@@ -407,6 +407,8 @@ export default class GameRoom implements Party.Server {
 
         case "GAME_EVENT":
           // Broadcast game events (enemy killed, egg collected, etc.)
+          console.log(`[GAME-EVENT] ${data.event} from ${sender.id}:`, JSON.stringify(data.data));
+          console.log(`[GAME-EVENT] Broadcasting to ${this.state.players.size - 1} other players`);
           this.room.broadcast(
             JSON.stringify({
               type: "GAME_EVENT",

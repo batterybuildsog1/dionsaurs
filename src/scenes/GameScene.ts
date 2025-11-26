@@ -39,6 +39,8 @@ export class GameScene extends Phaser.Scene {
   private playersAtExit: Set<string> = new Set();
   private levelCompleteShown: boolean = false;
   private waitingOverlay?: Phaser.GameObjects.Container;
+  private sceneShuttingDown: boolean = false;
+  private exitTriggered: boolean = false; // Debounce exit overlap
 
   constructor() {
     super("GameScene");
@@ -58,6 +60,8 @@ export class GameScene extends Phaser.Scene {
     this.playersAtExit.clear();
     this.levelCompleteShown = false;
     this.waitingOverlay = undefined;
+    this.sceneShuttingDown = false;
+    this.exitTriggered = false;
   }
 
   preload() {
@@ -397,6 +401,12 @@ export class GameScene extends Phaser.Scene {
 
     // Handle game events from other players
     networkManager.on("gameEvent", (data) => {
+      // Guard: ignore events if scene is shutting down
+      if (this.sceneShuttingDown) {
+        console.log(`[EXIT-SYNC] Ignoring ${data.event} - scene shutting down`);
+        return;
+      }
+
       switch (data.event) {
         case "ENEMY_KILLED":
           // Find and destroy the enemy (by position for now)
@@ -406,21 +416,29 @@ export class GameScene extends Phaser.Scene {
           break;
         case "PLAYER_AT_EXIT":
           // Remote player reached the exit
+          console.log(`[EXIT-SYNC] Received PLAYER_AT_EXIT from ${data.data.playerId}`);
+          console.log(`[EXIT-SYNC] Players at exit before: ${Array.from(this.playersAtExit).join(", ")}`);
           this.playersAtExit.add(data.data.playerId);
+          console.log(`[EXIT-SYNC] Players at exit after: ${Array.from(this.playersAtExit).join(", ")}`);
           this.checkAllPlayersAtExit();
           break;
         case "ALL_AT_EXIT":
           // All players reached exit - show completion UI
-          if (!this.levelCompleteShown) {
+          console.log(`[EXIT-SYNC] Received ALL_AT_EXIT from host`);
+          if (!this.levelCompleteShown && !this.sceneShuttingDown) {
             this.showLevelComplete();
           }
           break;
         case "NEXT_LEVEL":
           // Host is starting next level - follow them
-          this.scene.start("GameScene", {
-            levelId: data.data.levelId,
-            isMultiplayer: true,
-          });
+          console.log(`[EXIT-SYNC] Received NEXT_LEVEL: ${data.data.levelId}`);
+          if (!this.sceneShuttingDown) {
+            this.sceneShuttingDown = true;
+            this.scene.start("GameScene", {
+              levelId: data.data.levelId,
+              isMultiplayer: true,
+            });
+          }
           break;
       }
     });
@@ -772,24 +790,37 @@ export class GameScene extends Phaser.Scene {
   }
 
   private reachExit(_player: any, _exit: any) {
-    // Prevent multiple triggers
-    if (this.levelCompleteShown) return;
+    // Debounce: prevent multiple triggers from continuous overlap
+    if (this.exitTriggered || this.levelCompleteShown || this.sceneShuttingDown) {
+      return;
+    }
+    this.exitTriggered = true;
+
+    console.log(`[EXIT-SYNC] reachExit() called, isMultiplayer: ${this.isMultiplayer}`);
 
     // In multiplayer, we need all players to reach the exit
     if (this.isMultiplayer) {
-      // Add ourselves to the players at exit
       const myId = networkManager.myPlayerId;
+      const totalPlayers = networkManager.getAllPlayers().length;
+
+      console.log(`[EXIT-SYNC] My ID: ${myId}, Total players: ${totalPlayers}`);
+      console.log(`[EXIT-SYNC] Players at exit before adding self: ${Array.from(this.playersAtExit).join(", ") || "none"}`);
+
       if (!this.playersAtExit.has(myId)) {
         this.playersAtExit.add(myId);
+        console.log(`[EXIT-SYNC] Added self to playersAtExit. Count: ${this.playersAtExit.size}/${totalPlayers}`);
 
         // Broadcast that we reached the exit
         networkManager.sendGameEvent("PLAYER_AT_EXIT", { playerId: myId });
+        console.log(`[EXIT-SYNC] Sent PLAYER_AT_EXIT event`);
 
         // Show waiting overlay
         this.showWaitingOverlay();
 
-        // Check if all players are at exit
-        this.checkAllPlayersAtExit();
+        // Check if all players are at exit (with small delay to allow network sync)
+        this.time.delayedCall(100, () => {
+          this.checkAllPlayersAtExit();
+        });
       }
       return;
     }
@@ -836,26 +867,43 @@ export class GameScene extends Phaser.Scene {
   }
 
   private checkAllPlayersAtExit() {
-    if (this.levelCompleteShown) return;
+    if (this.levelCompleteShown || this.sceneShuttingDown) {
+      console.log(`[EXIT-SYNC] checkAllPlayersAtExit() skipped - levelComplete: ${this.levelCompleteShown}, shuttingDown: ${this.sceneShuttingDown}`);
+      return;
+    }
 
     // Get total player count
     const totalPlayers = networkManager.getAllPlayers().length;
     const playersAtExitCount = this.playersAtExit.size;
 
+    console.log(`[EXIT-SYNC] checkAllPlayersAtExit() - ${playersAtExitCount}/${totalPlayers} players at exit`);
+    console.log(`[EXIT-SYNC] Players at exit: ${Array.from(this.playersAtExit).join(", ")}`);
+    console.log(`[EXIT-SYNC] All players: ${networkManager.getAllPlayers().map(p => p.id).join(", ")}`);
+
     // Check if all players have reached the exit
-    if (playersAtExitCount >= totalPlayers) {
+    if (playersAtExitCount >= totalPlayers && totalPlayers > 0) {
+      console.log(`[EXIT-SYNC] All players at exit! isHost: ${networkManager.isHost}`);
+
       // Host broadcasts that everyone made it
       if (networkManager.isHost) {
+        console.log(`[EXIT-SYNC] Host sending ALL_AT_EXIT event`);
         networkManager.sendGameEvent("ALL_AT_EXIT", {});
       }
       // Show level complete for everyone
       this.showLevelComplete();
+    } else {
+      console.log(`[EXIT-SYNC] Still waiting for ${totalPlayers - playersAtExitCount} more player(s)`);
     }
   }
 
   private showLevelComplete() {
-    if (this.levelCompleteShown) return;
+    if (this.levelCompleteShown || this.sceneShuttingDown) {
+      console.log(`[EXIT-SYNC] showLevelComplete() skipped - already shown or shutting down`);
+      return;
+    }
     this.levelCompleteShown = true;
+
+    console.log(`[EXIT-SYNC] showLevelComplete() - displaying completion UI`);
 
     // Remove waiting overlay if present
     if (this.waitingOverlay) {
@@ -922,6 +970,9 @@ export class GameScene extends Phaser.Scene {
           continueBtn.on('pointerover', () => continueBtn.setFillStyle(0x66BB6A));
           continueBtn.on('pointerout', () => continueBtn.setFillStyle(0x4CAF50));
           continueBtn.on('pointerdown', () => {
+            if (this.sceneShuttingDown) return;
+            this.sceneShuttingDown = true;
+            console.log(`[EXIT-SYNC] Host clicked Continue - broadcasting NEXT_LEVEL: ${nextLevelId}`);
             // Broadcast next level to all players
             networkManager.sendGameEvent("NEXT_LEVEL", { levelId: nextLevelId });
             this.scene.start("GameScene", {
@@ -956,6 +1007,9 @@ export class GameScene extends Phaser.Scene {
         continueBtn.on('pointerover', () => continueBtn.setFillStyle(0x66BB6A));
         continueBtn.on('pointerout', () => continueBtn.setFillStyle(0x4CAF50));
         continueBtn.on('pointerdown', () => {
+          if (this.sceneShuttingDown) return;
+          this.sceneShuttingDown = true;
+          console.log(`[EXIT-SYNC] Single player continue to level ${nextLevelId}`);
           this.scene.start("GameScene", {
             levelId: nextLevelId,
             isMultiplayer: false,
@@ -985,6 +1039,9 @@ export class GameScene extends Phaser.Scene {
     menuBtn.on('pointerover', () => menuBtn.setFillStyle(0x888888));
     menuBtn.on('pointerout', () => menuBtn.setFillStyle(0x666666));
     menuBtn.on('pointerdown', () => {
+      if (this.sceneShuttingDown) return;
+      this.sceneShuttingDown = true;
+      console.log(`[EXIT-SYNC] Back to menu clicked`);
       if (this.isMultiplayer) {
         networkManager.disconnect();
       }
