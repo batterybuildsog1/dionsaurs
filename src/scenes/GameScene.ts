@@ -116,6 +116,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   create() {
+    // Ensure physics is active (may have been paused from previous level)
+    this.physics.resume();
+
     this.createAnimations();
     this.score = GameState.getScore();
     this._lastCheckpoint = null; // Reset checkpoint on level start
