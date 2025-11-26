@@ -49,13 +49,15 @@ export default class GameRoom implements Party.Server {
   // Track if we've registered with the lobby
   private registeredWithLobby: boolean = false;
 
+  // Store the host URL extracted from first connection
+  private partyHost: string = "";
+
   constructor(readonly room: Party.Room) {}
 
   // Get the lobby URL for this partykit deployment
   private getLobbyUrl(): string {
-    // PartyKit URLs follow the pattern: https://[project].[user].partykit.dev/parties/[party]/[room]
-    // For the lobby, we use a fixed room ID "main"
-    const host = this.room.env.PARTYKIT_HOST || "localhost:1999";
+    // Use the host extracted from connection, or fall back to env var
+    const host = this.partyHost || this.room.env.PARTYKIT_HOST || "localhost:1999";
     const protocol = host.includes("localhost") ? "http" : "https";
     return `${protocol}://${host}/parties/lobby/main`;
   }
@@ -64,11 +66,12 @@ export default class GameRoom implements Party.Server {
   private async notifyLobby(
     type: "ROOM_CREATED" | "ROOM_UPDATED" | "ROOM_CLOSED"
   ) {
-    try {
-      const lobbyUrl = this.getLobbyUrl();
+    const lobbyUrl = this.getLobbyUrl();
+    console.log(`Notifying lobby (${type}): ${lobbyUrl}`);
 
+    try {
       if (type === "ROOM_CLOSED") {
-        await fetch(lobbyUrl, {
+        const response = await fetch(lobbyUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -76,6 +79,7 @@ export default class GameRoom implements Party.Server {
             roomId: this.room.id,
           }),
         });
+        console.log(`Lobby notification response (${type}):`, response.status);
         this.registeredWithLobby = false;
       } else {
         const roomInfo: RoomInfo = {
@@ -89,7 +93,9 @@ export default class GameRoom implements Party.Server {
           updatedAt: Date.now(),
         };
 
-        await fetch(lobbyUrl, {
+        console.log(`Sending room info to lobby:`, JSON.stringify(roomInfo));
+
+        const response = await fetch(lobbyUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -97,10 +103,18 @@ export default class GameRoom implements Party.Server {
             room: roomInfo,
           }),
         });
-        this.registeredWithLobby = true;
+        console.log(`Lobby notification response (${type}):`, response.status);
+
+        if (response.ok) {
+          this.registeredWithLobby = true;
+        } else {
+          console.error(`Lobby returned error status: ${response.status}`);
+        }
       }
     } catch (e) {
       console.error("Failed to notify lobby:", e);
+      console.error("Lobby URL was:", lobbyUrl);
+      console.error("PartyHost was:", this.partyHost);
     }
   }
 
@@ -128,6 +142,17 @@ export default class GameRoom implements Party.Server {
   }
 
   onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
+    // Extract and store the host from the request URL for lobby communication
+    if (!this.partyHost) {
+      try {
+        const url = new URL(ctx.request.url);
+        this.partyHost = url.host;
+        console.log("Extracted partyHost:", this.partyHost);
+      } catch (e) {
+        console.error("Failed to extract host from URL:", e);
+      }
+    }
+
     // Check if game already started
     if (this.state.gameStatus === "playing") {
       conn.send(JSON.stringify({ type: "GAME_IN_PROGRESS" }));

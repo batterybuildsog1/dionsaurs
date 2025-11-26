@@ -111,9 +111,11 @@ export default class Lobby implements Party.Server {
     if (req.method === "POST") {
       try {
         const data = await req.json();
+        console.log("Lobby received POST:", data.type, data.room?.roomId || data.roomId);
 
         if (data.type === "ROOM_CREATED" || data.type === "ROOM_UPDATED") {
           this.state.rooms.set(data.room.roomId, data.room);
+          console.log(`Lobby: Room ${data.room.roomId} registered. Total rooms: ${this.state.rooms.size}`);
           this.broadcastRoomList();
           return new Response(JSON.stringify({ success: true }), {
             headers: {
@@ -125,6 +127,7 @@ export default class Lobby implements Party.Server {
 
         if (data.type === "ROOM_CLOSED") {
           this.state.rooms.delete(data.roomId);
+          console.log(`Lobby: Room ${data.roomId} closed. Total rooms: ${this.state.rooms.size}`);
           this.broadcastRoomList();
           return new Response(JSON.stringify({ success: true }), {
             headers: {
@@ -133,8 +136,17 @@ export default class Lobby implements Party.Server {
             },
           });
         }
+
+        console.log("Lobby: Unknown POST type:", data.type);
       } catch (e) {
         console.error("Lobby: Error handling POST:", e);
+        return new Response(JSON.stringify({ error: "Invalid request" }), {
+          status: 400,
+          headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+          },
+        });
       }
     }
 
