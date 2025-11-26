@@ -2,7 +2,7 @@ import Phaser from "phaser";
 import { Player } from "../objects/Player";
 import { Enemy } from "../objects/Enemy";
 import { Egg } from "../objects/Egg";
-import { PowerUp } from "../objects/PowerUp";
+import { PowerUp, POWERUP_CONFIGS } from "../objects/PowerUp";
 import { Checkpoint } from "../objects/Checkpoint";
 import { LifePickup } from "../objects/LifePickup";
 import { LEVELS, LevelData } from "../data/levels";
@@ -89,6 +89,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   preload() {
+    // Preload audio (backup in case BootScene didn't load them)
+    audioManager.preload(this);
+
     this.load.spritesheet("player", "assets/dino.png", {
       frameWidth: 32,
       frameHeight: 32,
@@ -1123,11 +1126,19 @@ export class GameScene extends Phaser.Scene {
   private collectPowerUp(player: any, powerup: any) {
     const p = powerup as PowerUp;
     const pl = player as Player;
+    const powerupX = p.x;
+    const powerupY = p.y;
+    const config = POWERUP_CONFIGS[p.type];
+
     pl.activatePowerUp(p.type);
     p.destroy();
 
-    // Play powerup sound
+    // Play powerup sound and show floating text with powerup name
     audioManager.play('powerup');
+
+    // Convert hex color to CSS color string
+    const colorHex = '#' + config.color.toString(16).padStart(6, '0');
+    this.showFloatingText(powerupX, powerupY, config.description.toUpperCase() + '!', colorHex);
   }
 
   private collectLife(_player: any, life: any) {

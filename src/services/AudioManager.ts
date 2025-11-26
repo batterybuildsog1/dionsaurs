@@ -33,19 +33,29 @@ class AudioManager {
    * Initialize sounds after preload - call this in any scene's create()
    */
   init(scene: Phaser.Scene): void {
+    console.log('[Audio] Initializing AudioManager for scene:', scene.scene.key);
+
     // Only initialize once per scene type, but allow reinit on scene change
     this.scene = scene;
     this.sounds.clear();
 
+    let loadedCount = 0;
     Object.keys(SOUNDS).forEach((key) => {
       try {
-        const sound = scene.sound.add(key, { volume: this._volume });
-        this.sounds.set(key as SoundKey, sound);
+        // Check if sound exists in cache
+        if (scene.cache.audio.exists(key)) {
+          const sound = scene.sound.add(key, { volume: this._volume });
+          this.sounds.set(key as SoundKey, sound);
+          loadedCount++;
+        } else {
+          console.warn(`[Audio] Sound not in cache: ${key}`);
+        }
       } catch (e) {
-        console.warn(`Failed to initialize sound: ${key}`, e);
+        console.warn(`[Audio] Failed to initialize sound: ${key}`, e);
       }
     });
 
+    console.log(`[Audio] Initialized ${loadedCount}/${Object.keys(SOUNDS).length} sounds`);
     this.initialized = true;
   }
 
