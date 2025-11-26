@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { networkManager, PlayerState } from '../services/NetworkManager';
 import { GameState } from '../services/GameState';
+import { LEVELS } from '../data/levels';
 
 export class RoomScene extends Phaser.Scene {
   private statusText!: Phaser.GameObjects.Text;
@@ -9,6 +10,9 @@ export class RoomScene extends Phaser.Scene {
   private startBtn!: Phaser.GameObjects.Container;
   private readyBtn!: Phaser.GameObjects.Container;
   private myReadyState: boolean = false;
+  private selectedLevelId: number = 1;
+  private levelButtons: Phaser.GameObjects.Rectangle[] = [];
+  private levelTexts: Phaser.GameObjects.Text[] = [];
 
   constructor() {
     super('RoomScene');
@@ -73,6 +77,9 @@ export class RoomScene extends Phaser.Scene {
 
     // Player list container
     this.playerListContainer = this.add.container(0, 175);
+
+    // Level selector (will be shown only to host in updateUI)
+    this.createLevelSelector();
 
     // Ready button (for all players)
     this.readyBtn = this.createButton(width / 2, height - 140, 'Click to Ready', '#FF9800', 220, 55);
@@ -310,6 +317,9 @@ export class RoomScene extends Phaser.Scene {
     } else {
       this.startBtn.setVisible(false);
     }
+
+    // Update level selector visibility (host only)
+    this.updateLevelSelector();
   }
 
   private toggleReady() {
@@ -320,8 +330,112 @@ export class RoomScene extends Phaser.Scene {
 
   private startGame() {
     if (networkManager.isHost) {
-      networkManager.startGame(1);
+      networkManager.startGame(this.selectedLevelId);
     }
+  }
+
+  private createLevelSelector() {
+    const width = this.cameras.main.width;
+    const height = this.cameras.main.height;
+    const unlockedLevel = parseInt(localStorage.getItem('dino_unlocked_level') || '1', 10);
+
+    // Level selector label
+    const label = this.add.text(width / 2, height - 210, 'Select Level:', {
+      fontSize: '16px',
+      color: '#aaaaaa',
+    }).setOrigin(0.5);
+    label.setData('isLevelSelector', true);
+
+    // Create level buttons
+    const buttonWidth = 55;
+    const spacing = 10;
+    const totalWidth = LEVELS.length * buttonWidth + (LEVELS.length - 1) * spacing;
+    const startX = width / 2 - totalWidth / 2 + buttonWidth / 2;
+
+    LEVELS.forEach((level, index) => {
+      const x = startX + index * (buttonWidth + spacing);
+      const y = height - 175;
+      const isUnlocked = level.id <= unlockedLevel;
+      const isSelected = level.id === this.selectedLevelId;
+
+      const btn = this.add.rectangle(
+        x, y, buttonWidth, 40,
+        isSelected ? 0x4CAF50 : (isUnlocked ? 0x444466 : 0x333333)
+      );
+      btn.setData('isLevelSelector', true);
+      btn.setData('levelId', level.id);
+
+      if (isUnlocked) {
+        btn.setInteractive({ useHandCursor: true });
+        btn.on('pointerover', () => {
+          if (level.id !== this.selectedLevelId) {
+            btn.setFillStyle(0x555588);
+          }
+        });
+        btn.on('pointerout', () => {
+          btn.setFillStyle(level.id === this.selectedLevelId ? 0x4CAF50 : 0x444466);
+        });
+        btn.on('pointerdown', () => {
+          this.selectedLevelId = level.id;
+          this.updateLevelSelector();
+        });
+      }
+
+      const text = this.add.text(x, y, `${level.id}`, {
+        fontSize: '18px',
+        color: isUnlocked ? '#ffffff' : '#666666',
+        fontStyle: isSelected ? 'bold' : 'normal',
+      }).setOrigin(0.5);
+      text.setData('isLevelSelector', true);
+      text.setData('levelId', level.id);
+
+      this.levelButtons.push(btn);
+      this.levelTexts.push(text);
+    });
+
+    // Level name display
+    const levelName = LEVELS[this.selectedLevelId - 1]?.name || '';
+    const nameText = this.add.text(width / 2, height - 140, levelName, {
+      fontSize: '14px',
+      color: '#4CAF50',
+    }).setOrigin(0.5);
+    nameText.setData('isLevelSelector', true);
+    nameText.setData('isLevelName', true);
+  }
+
+  private updateLevelSelector() {
+    const unlockedLevel = parseInt(localStorage.getItem('dino_unlocked_level') || '1', 10);
+
+    // Update button colors
+    this.levelButtons.forEach((btn, index) => {
+      const levelId = index + 1;
+      const isSelected = levelId === this.selectedLevelId;
+      const isUnlocked = levelId <= unlockedLevel;
+      btn.setFillStyle(isSelected ? 0x4CAF50 : (isUnlocked ? 0x444466 : 0x333333));
+    });
+
+    // Update text styles
+    this.levelTexts.forEach((text, index) => {
+      const levelId = index + 1;
+      const isSelected = levelId === this.selectedLevelId;
+      text.setFontStyle(isSelected ? 'bold' : 'normal');
+    });
+
+    // Update level name
+    const levelName = LEVELS[this.selectedLevelId - 1]?.name || '';
+    this.children.list.forEach((child: any) => {
+      if (child.getData && child.getData('isLevelName')) {
+        child.setText(levelName);
+      }
+    });
+
+    // Show/hide based on host status
+    const isHost = networkManager.isHost;
+    this.children.list.forEach((child: any) => {
+      if (child.getData && child.getData('isLevelSelector')) {
+        child.setVisible(isHost);
+      }
+    });
   }
 
   shutdown() {

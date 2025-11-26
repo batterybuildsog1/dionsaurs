@@ -3,8 +3,11 @@ import { Player } from "../objects/Player";
 import { Enemy } from "../objects/Enemy";
 import { Egg } from "../objects/Egg";
 import { PowerUp } from "../objects/PowerUp";
+import { Checkpoint } from "../objects/Checkpoint";
+import { LifePickup } from "../objects/LifePickup";
 import { LEVELS, LevelData } from "../data/levels";
 import { networkManager, PlayerState } from "../services/NetworkManager";
+import { GameState } from "../services/GameState";
 
 // Player colors for visual distinction
 const PLAYER_COLORS = [0x88ff88, 0xff8888, 0x8888ff, 0xffff88];
@@ -16,12 +19,21 @@ export class GameScene extends Phaser.Scene {
   private enemies!: Phaser.GameObjects.Group;
   private eggs!: Phaser.GameObjects.Group;
   private powerups!: Phaser.GameObjects.Group;
+  private _checkpoints!: Phaser.Physics.Arcade.Group;
+  private lifePickups!: Phaser.GameObjects.Group;
+  private _lastCheckpoint: { x: number; y: number } | null = null;
 
   private score: number = 0;
   private scoreText!: Phaser.GameObjects.Text;
+  private livesText!: Phaser.GameObjects.Text;
   private currentLevel: LevelData;
 
   private isMultiplayer: boolean = false;
+  private isInvincible: boolean = false;
+
+  // Network update throttling (prevents flooding - 60fps -> 10 updates/sec)
+  private lastNetworkUpdateTime: number = 0;
+  private networkUpdateInterval: number = 100; // milliseconds between updates
 
   constructor() {
     super("GameScene");
@@ -69,11 +81,30 @@ export class GameScene extends Phaser.Scene {
     powerupGraphics.fillTriangle(0, 32, 16, 0, 32, 32);
     powerupGraphics.generateTexture("powerup", 32, 32);
     powerupGraphics.destroy();
+
+    // Create checkpoint texture (flag shape)
+    const checkpointGraphics = this.add.graphics();
+    checkpointGraphics.fillStyle(0xffffff);
+    checkpointGraphics.fillRect(0, 0, 8, 48); // Pole
+    checkpointGraphics.fillRect(8, 0, 24, 20); // Flag
+    checkpointGraphics.generateTexture("checkpoint", 32, 48);
+    checkpointGraphics.destroy();
+
+    // Create life pickup texture (heart shape)
+    const lifeGraphics = this.add.graphics();
+    lifeGraphics.fillStyle(0xff0066);
+    // Simple heart using circles and triangle
+    lifeGraphics.fillCircle(8, 8, 8);
+    lifeGraphics.fillCircle(24, 8, 8);
+    lifeGraphics.fillTriangle(0, 10, 32, 10, 16, 28);
+    lifeGraphics.generateTexture("life", 32, 32);
+    lifeGraphics.destroy();
   }
 
   create() {
     this.createAnimations();
-    this.score = 0;
+    this.score = GameState.getScore();
+    this._lastCheckpoint = null; // Reset checkpoint on level start
 
     // Setup World Bounds
     this.physics.world.setBounds(0, 0, this.currentLevel.width, this.currentLevel.height);
@@ -128,6 +159,27 @@ export class GameScene extends Phaser.Scene {
       this.powerups.add(new PowerUp(this, p.x, p.y, p.type));
     });
 
+    // Create Checkpoints
+    this._checkpoints = this.physics.add.group();
+    if (this.currentLevel.checkpoints) {
+      this.currentLevel.checkpoints.forEach((cp) => {
+        const checkpoint = new Checkpoint(this, cp.x, cp.y - 24); // Offset up so base is at ground
+        this._checkpoints.add(checkpoint);
+      });
+    }
+
+    // Create Life Pickups
+    this.lifePickups = this.physics.add.group({
+      classType: LifePickup,
+      runChildUpdate: false,
+    });
+
+    if (this.currentLevel.lives) {
+      this.currentLevel.lives.forEach((l) => {
+        this.lifePickups.add(new LifePickup(this, l.x, l.y));
+      });
+    }
+
     // Setup Colliders
     this.setupColliders();
 
@@ -144,18 +196,25 @@ export class GameScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.localPlayer, true, 0.08, 0.08);
 
     // UI
-    this.scoreText = this.add
-      .text(16, 48, "Score: 0", {
-        fontSize: "24px",
-        color: "#ffffff",
-      })
-      .setScrollFactor(0);
-
     this.add
       .text(16, 16, `Level ${this.currentLevel.id}: ${this.currentLevel.name}`, {
         fontSize: "18px",
         color: "#ffff00",
         backgroundColor: "#000000",
+      })
+      .setScrollFactor(0);
+
+    this.scoreText = this.add
+      .text(16, 48, `Score: ${this.score}`, {
+        fontSize: "24px",
+        color: "#ffffff",
+      })
+      .setScrollFactor(0);
+
+    this.livesText = this.add
+      .text(16, 80, `Lives: ${GameState.getLives()}`, {
+        fontSize: "24px",
+        color: "#ff6666",
       })
       .setScrollFactor(0);
 
@@ -259,6 +318,20 @@ export class GameScene extends Phaser.Scene {
       undefined,
       this
     );
+    this.physics.add.overlap(
+      this.localPlayer,
+      this._checkpoints,
+      this.activateCheckpoint,
+      undefined,
+      this
+    );
+    this.physics.add.overlap(
+      this.localPlayer,
+      this.lifePickups,
+      this.collectLife,
+      undefined,
+      this
+    );
   }
 
   private setupNetworkListeners() {
@@ -281,8 +354,15 @@ export class GameScene extends Phaser.Scene {
         remotePlayer = this.createRemotePlayer(playerState);
       }
 
-      // Update remote player position
-      remotePlayer.setPosition(data.x, data.y);
+      // Update remote player position with smooth interpolation
+      // Use tween for smooth movement instead of instant position snap
+      this.tweens.add({
+        targets: remotePlayer,
+        x: data.x,
+        y: data.y,
+        duration: 80, // Slightly less than update interval for smooth catch-up
+        ease: 'Linear'
+      });
       remotePlayer.setFlipX(data.flipX);
       if (data.anim) {
         remotePlayer.play(data.anim, true);
@@ -402,45 +482,228 @@ export class GameScene extends Phaser.Scene {
       player.update();
     });
 
-    // Send position update in multiplayer
+    // Send position update in multiplayer (THROTTLED to prevent flooding)
     if (this.isMultiplayer && networkManager.isConnected) {
-      networkManager.sendPlayerUpdate(
-        this.localPlayer.x,
-        this.localPlayer.y,
-        this.localPlayer.flipX,
-        this.localPlayer.anims.currentAnim?.key || "dino-idle"
-      );
+      const now = Date.now();
+      if (now - this.lastNetworkUpdateTime >= this.networkUpdateInterval) {
+        networkManager.sendPlayerUpdate(
+          this.localPlayer.x,
+          this.localPlayer.y,
+          this.localPlayer.flipX,
+          this.localPlayer.anims.currentAnim?.key || "dino-idle"
+        );
+        this.lastNetworkUpdateTime = now;
+      }
     }
 
     // Check if fell out of world
-    if (this.localPlayer.y > this.currentLevel.height) {
-      this.scene.restart();
+    if (this.localPlayer.y > this.currentLevel.height && !this.isInvincible) {
+      this.handleDeath();
     }
   }
 
   private handleAttackEnemy(_hitbox: any, enemy: any) {
     if ((enemy as Enemy).active) {
+      const enemyX = enemy.x;
+      const enemyY = enemy.y;
+
       (enemy as Enemy).destroy();
       this.score += 20;
+      GameState.setScore(this.score);
       this.scoreText.setText("Score: " + this.score);
+
+      // 20% chance to drop a life pickup
+      if (Math.random() < 0.2) {
+        const droppedLife = new LifePickup(this, enemyX, enemyY - 20);
+        this.lifePickups.add(droppedLife);
+
+        // Make dropped life fall with gravity briefly
+        const body = droppedLife.body as Phaser.Physics.Arcade.Body;
+        body.setAllowGravity(true);
+        body.setVelocityY(-100); // Pop up first
+
+        // Stop gravity after landing
+        this.time.delayedCall(1000, () => {
+          if (droppedLife.active) {
+            body.setAllowGravity(false);
+            body.setVelocityY(0);
+          }
+        });
+      }
 
       // Broadcast event in multiplayer
       if (this.isMultiplayer) {
         networkManager.sendGameEvent("ENEMY_KILLED", {
-          x: enemy.x,
-          y: enemy.y,
+          x: enemyX,
+          y: enemyY,
         });
       }
     }
   }
 
   private handlePlayerEnemyCollision(_player: any, _enemy: any) {
-    this.scene.restart();
+    if (!this.isInvincible) {
+      this.handleDeath();
+    }
+  }
+
+  private handleDeath() {
+    if (this.isInvincible) return; // Can't die during invincibility
+
+    const remainingLives = GameState.decrementLives();
+    this.livesText.setText(`Lives: ${remainingLives}`);
+
+    // Pause player input during death
+    this.localPlayer.setVelocity(0, 0);
+
+    // Screen shake
+    this.cameras.main.shake(300, 0.02);
+
+    // Flash red and shrink
+    this.tweens.add({
+      targets: this.localPlayer,
+      tint: { from: 0xffffff, to: 0xff0000 },
+      scaleX: { from: 1, to: 0 },
+      scaleY: { from: 1, to: 0 },
+      alpha: { from: 1, to: 0 },
+      duration: 500,
+      ease: "Power2",
+      onComplete: () => {
+        if (remainingLives <= 0) {
+          this.showGameOver();
+        } else {
+          this.respawnPlayer();
+        }
+      },
+    });
+
+    // Create death particles
+    this.createDeathParticles(this.localPlayer.x, this.localPlayer.y);
+  }
+
+  private createDeathParticles(x: number, y: number) {
+    for (let i = 0; i < 8; i++) {
+      const angle = (Math.PI * 2 * i) / 8;
+      const speed = 100 + Math.random() * 50;
+
+      const particle = this.add.circle(x, y, 4, 0xff4444);
+      this.physics.add.existing(particle);
+      const body = particle.body as Phaser.Physics.Arcade.Body;
+      body.setVelocity(
+        Math.cos(angle) * speed,
+        Math.sin(angle) * speed - 50
+      );
+      body.setAllowGravity(true);
+
+      this.tweens.add({
+        targets: particle,
+        alpha: 0,
+        duration: 800,
+        onComplete: () => particle.destroy(),
+      });
+    }
+  }
+
+  private respawnPlayer() {
+    let spawnX: number, spawnY: number;
+
+    if (this._lastCheckpoint) {
+      spawnX = this._lastCheckpoint.x;
+      spawnY = this._lastCheckpoint.y;
+    } else {
+      spawnX = 100;
+      spawnY = this.currentLevel.height - 150;
+    }
+
+    // Reset player state
+    this.localPlayer.setPosition(spawnX, spawnY);
+    this.localPlayer.setVelocity(0, 0);
+    this.localPlayer.setScale(0);
+    this.localPlayer.setAlpha(0);
+    this.localPlayer.clearTint();
+
+    // Spawn animation - scale up and fade in
+    this.tweens.add({
+      targets: this.localPlayer,
+      scaleX: 1,
+      scaleY: 1,
+      alpha: 1,
+      duration: 300,
+      ease: "Back.out",
+      onComplete: () => {
+        // Start invincibility period
+        this.startInvincibility();
+      },
+    });
+  }
+
+  private startInvincibility() {
+    this.isInvincible = true;
+
+    // Flash effect during invincibility
+    this.tweens.add({
+      targets: this.localPlayer,
+      alpha: 0.3,
+      duration: 100,
+      yoyo: true,
+      repeat: 9, // 10 flashes = 2 seconds
+      onComplete: () => {
+        this.isInvincible = false;
+        this.localPlayer.setAlpha(1);
+      },
+    });
+  }
+
+  private activateCheckpoint(_player: any, checkpoint: any) {
+    const cp = checkpoint as Checkpoint;
+    if (!cp.isActivated) {
+      cp.activate();
+      this._lastCheckpoint = { x: cp.x, y: cp.y + 24 }; // Store ground position
+    }
+  }
+
+  private showGameOver() {
+    this.physics.pause();
+    const cx = this.cameras.main.scrollX + this.cameras.main.width / 2;
+    const cy = this.cameras.main.height / 2;
+
+    this.add
+      .rectangle(cx, cy, 400, 200, 0x000000, 0.8)
+      .setScrollFactor(0)
+      .setDepth(100);
+
+    this.add
+      .text(cx, cy - 30, "GAME OVER", {
+        fontSize: "48px",
+        color: "#ff0000",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(101);
+
+    this.add
+      .text(cx, cy + 30, `Final Score: ${this.score}`, {
+        fontSize: "24px",
+        color: "#ffffff",
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(101);
+
+    this.time.delayedCall(3000, () => {
+      if (this.isMultiplayer) {
+        networkManager.disconnect();
+      }
+      GameState.reset();
+      this.scene.start("MenuScene");
+    });
   }
 
   private collectEgg(_player: any, egg: any) {
     (egg as Egg).destroy();
     this.score += 10;
+    GameState.setScore(this.score);
     this.scoreText.setText("Score: " + this.score);
 
     if (this.isMultiplayer) {
@@ -458,33 +721,119 @@ export class GameScene extends Phaser.Scene {
     p.destroy();
   }
 
+  private collectLife(_player: any, life: any) {
+    (life as LifePickup).destroy();
+    GameState.addLife();
+    this.livesText.setText(`Lives: ${GameState.getLives()}`);
+
+    // Visual feedback - brief flash of UI
+    this.tweens.add({
+      targets: this.livesText,
+      scaleX: 1.5,
+      scaleY: 1.5,
+      duration: 150,
+      yoyo: true,
+    });
+
+    if (this.isMultiplayer) {
+      networkManager.sendGameEvent("LIFE_COLLECTED", {
+        x: life.x,
+        y: life.y,
+      });
+    }
+  }
+
   private reachExit(_player: any, _exit: any) {
     this.physics.pause();
 
-    const nextLevel = this.currentLevel.id + 1;
+    const nextLevelId = this.currentLevel.id + 1;
+    const hasNextLevel = nextLevelId <= LEVELS.length;
     const currentUnlocked = parseInt(
       localStorage.getItem("dino_unlocked_level") || "1",
       10
     );
-    if (nextLevel > currentUnlocked) {
-      localStorage.setItem("dino_unlocked_level", nextLevel.toString());
+
+    // Unlock next level
+    if (nextLevelId > currentUnlocked) {
+      localStorage.setItem("dino_unlocked_level", nextLevelId.toString());
     }
 
-    this.add
-      .text(
-        this.cameras.main.width / 2 + this.cameras.main.scrollX,
-        this.cameras.main.height / 2,
-        "LEVEL COMPLETE\nScore: " + this.score,
-        {
-          fontSize: "48px",
-          color: "#ffffff",
-          align: "center",
-          backgroundColor: "#000000",
-        }
-      )
-      .setOrigin(0.5);
+    const cx = this.cameras.main.width / 2 + this.cameras.main.scrollX;
+    const cy = this.cameras.main.height / 2 + this.cameras.main.scrollY;
 
-    this.time.delayedCall(3000, () => {
+    // Dark overlay
+    const overlay = this.add.rectangle(cx, cy, 500, 350, 0x000000, 0.85);
+    overlay.setScrollFactor(0);
+    overlay.setPosition(this.cameras.main.width / 2, this.cameras.main.height / 2);
+
+    // Level complete text
+    this.add.text(
+      this.cameras.main.width / 2,
+      this.cameras.main.height / 2 - 100,
+      "LEVEL COMPLETE!",
+      { fontSize: "42px", color: "#4CAF50", fontStyle: "bold" }
+    ).setOrigin(0.5).setScrollFactor(0);
+
+    // Score text
+    this.add.text(
+      this.cameras.main.width / 2,
+      this.cameras.main.height / 2 - 40,
+      `Score: ${this.score}`,
+      { fontSize: "28px", color: "#ffffff" }
+    ).setOrigin(0.5).setScrollFactor(0);
+
+    // Continue button (if there's a next level)
+    if (hasNextLevel) {
+      const nextLevelName = LEVELS[nextLevelId - 1]?.name || `Level ${nextLevelId}`;
+
+      const continueBtn = this.add.rectangle(
+        this.cameras.main.width / 2,
+        this.cameras.main.height / 2 + 30,
+        280, 50, 0x4CAF50
+      ).setScrollFactor(0).setInteractive({ useHandCursor: true });
+
+      this.add.text(
+        this.cameras.main.width / 2,
+        this.cameras.main.height / 2 + 30,
+        `Continue to ${nextLevelName}`,
+        { fontSize: "20px", color: "#ffffff", fontStyle: "bold" }
+      ).setOrigin(0.5).setScrollFactor(0);
+
+      continueBtn.on('pointerover', () => continueBtn.setFillStyle(0x66BB6A));
+      continueBtn.on('pointerout', () => continueBtn.setFillStyle(0x4CAF50));
+      continueBtn.on('pointerdown', () => {
+        // In multiplayer, host broadcasts next level to all players
+        if (this.isMultiplayer && networkManager.isHost) {
+          networkManager.sendGameEvent("NEXT_LEVEL", { levelId: nextLevelId });
+        }
+        this.scene.start("GameScene", {
+          levelId: nextLevelId,
+          isMultiplayer: this.isMultiplayer,
+        });
+      });
+    }
+
+    // Back to Menu button
+    const menuBtnY = hasNextLevel
+      ? this.cameras.main.height / 2 + 100
+      : this.cameras.main.height / 2 + 30;
+
+    const menuBtn = this.add.rectangle(
+      this.cameras.main.width / 2,
+      menuBtnY,
+      200, 45, 0x666666
+    ).setScrollFactor(0).setInteractive({ useHandCursor: true });
+
+    this.add.text(
+      this.cameras.main.width / 2,
+      menuBtnY,
+      "Back to Menu",
+      { fontSize: "18px", color: "#ffffff" }
+    ).setOrigin(0.5).setScrollFactor(0);
+
+    menuBtn.on('pointerover', () => menuBtn.setFillStyle(0x888888));
+    menuBtn.on('pointerout', () => menuBtn.setFillStyle(0x666666));
+    menuBtn.on('pointerdown', () => {
       if (this.isMultiplayer) {
         networkManager.disconnect();
       }
