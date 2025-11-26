@@ -3,7 +3,8 @@ import { BootScene } from './scenes/BootScene';
 import { MenuScene } from './scenes/MenuScene';
 import { GameScene } from './scenes/GameScene';
 import { LevelSelectScene } from './scenes/LevelSelectScene';
-import { NetworkMenuScene } from './scenes/NetworkMenuScene';
+import { LobbyScene } from './scenes/LobbyScene';
+import { RoomScene } from './scenes/RoomScene';
 
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
@@ -17,7 +18,7 @@ const config: Phaser.Types.Core.GameConfig = {
       debug: false,
     },
   },
-  scene: [BootScene, MenuScene, NetworkMenuScene, LevelSelectScene, GameScene],
+  scene: [BootScene, MenuScene, LobbyScene, RoomScene, LevelSelectScene, GameScene],
   pixelArt: true,
   scale: {
     mode: Phaser.Scale.FIT,

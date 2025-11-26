@@ -44,7 +44,7 @@ export class LevelSelectScene extends Phaser.Scene {
         bg.on('pointerdown', () => {
           if (this.isMultiplayer && this.isHost) {
              // Tell other player to start
-             networkManager.send({ type: 'START_LEVEL', levelId: level.id });
+             networkManager.sendGameEvent('START_LEVEL', { levelId: level.id });
           }
           // Start GameScene with specific level data
           this.scene.start('GameScene', { 

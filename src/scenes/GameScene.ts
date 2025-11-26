@@ -271,6 +271,7 @@ export class GameScene extends Phaser.Scene {
         const playerState: PlayerState = {
           id: data.playerId,
           playerNumber: data.playerNumber,
+          playerName: `Player ${data.playerNumber}`,
           x: data.x,
           y: data.y,
           flipX: data.flipX,

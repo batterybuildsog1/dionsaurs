@@ -1,5 +1,9 @@
 {
   "name": "dino-clash-adventure",
   "main": "party/index.ts",
-  "compatibilityDate": "2024-01-01"
+  "compatibilityDate": "2024-01-01",
+  "parties": {
+    "lobby": "party/lobby.ts",
+    "game": "party/index.ts"
+  }
 }
