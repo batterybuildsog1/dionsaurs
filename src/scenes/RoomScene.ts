@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { networkManager, PlayerState } from '../services/NetworkManager';
+import { GameState } from '../services/GameState';
 
 export class RoomScene extends Phaser.Scene {
   private statusText!: Phaser.GameObjects.Text;
@@ -28,14 +29,38 @@ export class RoomScene extends Phaser.Scene {
     }).setOrigin(0.5);
 
     // Room info (name and code)
-    this.roomInfoText = this.add.text(width / 2, 65, '', {
-      fontSize: '18px',
+    this.roomInfoText = this.add.text(width / 2, 60, '', {
+      fontSize: '16px',
       color: '#4CAF50',
       align: 'center',
     }).setOrigin(0.5);
 
+    // Copy code button
+    const copyBtn = this.add.text(width / 2, 90, '[ Copy Code ]', {
+      fontSize: '14px',
+      color: '#2196F3',
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+    copyBtn.on('pointerdown', () => {
+      const code = networkManager.roomId;
+      if (code) {
+        navigator.clipboard.writeText(code).then(() => {
+          copyBtn.setText('Copied!');
+          this.time.delayedCall(1500, () => {
+            copyBtn.setText('[ Copy Code ]');
+          });
+        }).catch(() => {
+          // Fallback: show code in prompt for manual copy
+          prompt('Room code:', code);
+        });
+      }
+    });
+
+    copyBtn.on('pointerover', () => copyBtn.setColor('#64B5F6'));
+    copyBtn.on('pointerout', () => copyBtn.setColor('#2196F3'));
+
     // Status text
-    this.statusText = this.add.text(width / 2, 105, '', {
+    this.statusText = this.add.text(width / 2, 115, '', {
       fontSize: '16px',
       color: '#888888',
     }).setOrigin(0.5);
@@ -47,7 +72,7 @@ export class RoomScene extends Phaser.Scene {
     }).setOrigin(0.5);
 
     // Player list container
-    this.playerListContainer = this.add.container(0, 180);
+    this.playerListContainer = this.add.container(0, 175);
 
     // Ready button (for all players)
     this.readyBtn = this.createButton(width / 2, height - 140, 'Click to Ready', '#FF9800', 220, 55);
@@ -155,6 +180,7 @@ export class RoomScene extends Phaser.Scene {
 
     networkManager.on('gameStart', (data: { levelId: number; players: PlayerState[] }) => {
       networkManager.clearHandlers();
+      GameState.reset();
       this.scene.start('GameScene', {
         levelId: data.levelId,
         isMultiplayer: true,

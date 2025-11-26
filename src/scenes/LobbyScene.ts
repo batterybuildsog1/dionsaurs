@@ -7,6 +7,7 @@ export class LobbyScene extends Phaser.Scene {
   private rooms: RoomInfo[] = [];
   private playerNameInput!: Phaser.GameObjects.Text;
   private playerName: string = 'Player';
+  private autoRefreshTimer?: Phaser.Time.TimerEvent;
 
   constructor() {
     super('LobbyScene');
@@ -15,6 +16,12 @@ export class LobbyScene extends Phaser.Scene {
   create() {
     const width = this.cameras.main.width;
     const height = this.cameras.main.height;
+
+    // Load saved player name from localStorage
+    const savedName = localStorage.getItem('dino_player_name');
+    if (savedName) {
+      this.playerName = savedName;
+    }
 
     // Background
     this.cameras.main.setBackgroundColor('#1a1a2e');
@@ -46,6 +53,8 @@ export class LobbyScene extends Phaser.Scene {
       if (newName && newName.trim()) {
         this.playerName = newName.trim().substring(0, 20);
         this.playerNameInput.setText(this.playerName);
+        // Save to localStorage
+        localStorage.setItem('dino_player_name', this.playerName);
       }
     });
 
@@ -59,15 +68,24 @@ export class LobbyScene extends Phaser.Scene {
     const createBtn = this.createButton(width / 2 - 100, 160, 'Create Room', '#4CAF50', 180, 45);
     createBtn.on('pointerdown', () => this.createRoom());
 
-    // Refresh Button
-    const refreshBtn = this.createButton(width / 2 + 100, 160, 'Refresh', '#607D8B', 120, 45);
-    refreshBtn.on('pointerdown', () => this.refreshRooms());
+    // Join by Code Button
+    const joinCodeBtn = this.createButton(width / 2 + 100, 160, 'Join Code', '#9C27B0', 120, 45);
+    joinCodeBtn.on('pointerdown', () => this.joinByCode());
 
-    // Room list header
+    // Room list header and refresh
     this.add.text(50, 210, 'Available Rooms', {
       fontSize: '20px',
       color: '#ffffff',
     });
+
+    // Refresh link (smaller, to the right of header)
+    const refreshLink = this.add.text(width - 50, 215, 'Refresh', {
+      fontSize: '14px',
+      color: '#2196F3',
+    }).setOrigin(1, 0).setInteractive({ useHandCursor: true });
+    refreshLink.on('pointerdown', () => this.refreshRooms());
+    refreshLink.on('pointerover', () => refreshLink.setColor('#64B5F6'));
+    refreshLink.on('pointerout', () => refreshLink.setColor('#2196F3'));
 
     // Room list container
     this.roomListContainer = this.add.container(0, 250);
@@ -133,10 +151,31 @@ export class LobbyScene extends Phaser.Scene {
       await networkManager.connectToLobby();
       this.statusText.setText('Connected! Finding rooms...');
       networkManager.refreshRoomList();
+
+      // Start auto-refresh every 5 seconds
+      this.startAutoRefresh();
     } catch (error) {
       console.error('Failed to connect to lobby:', error);
       this.statusText.setText('Failed to connect. Click Refresh to retry.');
     }
+  }
+
+  private startAutoRefresh() {
+    // Clear any existing timer
+    if (this.autoRefreshTimer) {
+      this.autoRefreshTimer.destroy();
+    }
+
+    // Auto-refresh room list every 5 seconds
+    this.autoRefreshTimer = this.time.addEvent({
+      delay: 5000,
+      callback: () => {
+        if (networkManager.isLobbyConnected) {
+          networkManager.refreshRoomList();
+        }
+      },
+      loop: true,
+    });
   }
 
   private refreshRooms() {
@@ -145,6 +184,13 @@ export class LobbyScene extends Phaser.Scene {
       networkManager.refreshRoomList();
     } else {
       this.connectToLobby();
+    }
+  }
+
+  private joinByCode() {
+    const code = prompt('Enter Room Code:');
+    if (code && code.trim()) {
+      this.joinRoom(code.trim().toUpperCase());
     }
   }
 
@@ -247,6 +293,11 @@ export class LobbyScene extends Phaser.Scene {
   }
 
   shutdown() {
+    // Clean up auto-refresh timer
+    if (this.autoRefreshTimer) {
+      this.autoRefreshTimer.destroy();
+      this.autoRefreshTimer = undefined;
+    }
     networkManager.clearHandlers();
   }
 }
