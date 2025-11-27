@@ -35,9 +35,12 @@ export class GameScene extends Phaser.Scene {
   private isMultiplayer: boolean = false;
   private isInvincible: boolean = false;
 
-  // Network update throttling (30 updates/sec for smooth multiplayer)
+  // Network update throttling - adaptive sync rate
   private lastNetworkUpdateTime: number = 0;
-  private networkUpdateInterval: number = 33; // milliseconds between updates (30/sec)
+  private networkUpdateInterval: number = 33;
+  private readonly SYNC_RATE_GROUND: number = 33;   // 30Hz on ground
+  private readonly SYNC_RATE_AIRBORNE: number = 22; // 45Hz when jumping
+  private lastAirborneState: boolean = false;
 
   // Tween management - CRITICAL: prevents tween accumulation memory leak
   private remotePlayerTweens: Map<string, Phaser.Tweens.Tween> = new Map();
@@ -610,6 +613,56 @@ export class GameScene extends Phaser.Scene {
   private applyTheme() {
     if (this.currentLevel.theme === "ice") {
       this.cameras.main.setBackgroundColor("#e0f7fa");
+
+      // Snowfall particles
+      for (let i = 0; i < 40; i++) {
+        const x = Math.random() * this.currentLevel.width;
+        const y = Math.random() * this.currentLevel.height;
+        const size = 1 + Math.random() * 2;
+
+        const snowflake = this.add.circle(x, y, size, 0xffffff, 0.5 + Math.random() * 0.3);
+        snowflake.setScrollFactor(0.3 + Math.random() * 0.2);
+
+        this.tweens.add({
+          targets: snowflake,
+          y: this.currentLevel.height + 20,
+          x: x + (Math.random() - 0.5) * 100,
+          duration: 8000 + Math.random() * 6000,
+          repeat: -1,
+          onRepeat: () => {
+            snowflake.y = -10;
+            snowflake.x = Math.random() * this.currentLevel.width;
+          }
+        });
+      }
+    } else if (this.currentLevel.theme === "volcano") {
+      this.cameras.main.setBackgroundColor("#1a0a00");
+
+      // Rising ember particles
+      for (let i = 0; i < 30; i++) {
+        const x = Math.random() * this.currentLevel.width;
+        const y = this.currentLevel.height + Math.random() * 100;
+        const size = 1 + Math.random() * 2;
+        const colors = [0xff4400, 0xff6600, 0xff2200, 0xffaa00];
+        const color = colors[Math.floor(Math.random() * colors.length)];
+
+        const ember = this.add.circle(x, y, size, color, 0.7);
+        ember.setScrollFactor(0.2 + Math.random() * 0.3);
+
+        this.tweens.add({
+          targets: ember,
+          y: -50,
+          x: x + (Math.random() - 0.5) * 80,
+          alpha: 0,
+          duration: 6000 + Math.random() * 4000,
+          repeat: -1,
+          onRepeat: () => {
+            ember.y = this.currentLevel.height + Math.random() * 100;
+            ember.x = Math.random() * this.currentLevel.width;
+            ember.alpha = 0.7;
+          }
+        });
+      }
     } else if (this.currentLevel.theme === "space") {
       this.cameras.main.setBackgroundColor("#0d001a");
       for (let i = 0; i < 100; i++) {
@@ -699,6 +752,22 @@ export class GameScene extends Phaser.Scene {
       frameRate: 4,
       repeat: 0,
     });
+
+    // Raptor enemy (fast dinosaur)
+    this.anims.create({
+      key: "enemy-raptor-run",
+      frames: this.anims.generateFrameNumbers("enemy-raptor", { start: 0, end: 2 }),
+      frameRate: 12,
+      repeat: -1,
+    });
+
+    // T-Rex enemy (massive dinosaur)
+    this.anims.create({
+      key: "enemy-trex-walk",
+      frames: this.anims.generateFrameNumbers("enemy-trex", { start: 0, end: 2 }),
+      frameRate: 6,
+      repeat: -1,
+    });
   }
 
   update() {
@@ -736,23 +805,54 @@ export class GameScene extends Phaser.Scene {
       });
     }
 
-    // Send position update in multiplayer (THROTTLED to prevent flooding)
+    // Send position update in multiplayer (ADAPTIVE SYNC - faster during jumps)
     if (this.isMultiplayer && networkManager.isConnected) {
       const now = Date.now();
-      if (now - this.lastNetworkUpdateTime >= this.networkUpdateInterval) {
+      const body = this.localPlayer.body as Phaser.Physics.Arcade.Body;
+      const velocityY = body.velocity.y;
+      const isAirborne = !body.blocked.down;
+
+      // Adaptive interval: faster sync when airborne for smoother jumps
+      this.networkUpdateInterval = isAirborne ? this.SYNC_RATE_AIRBORNE : this.SYNC_RATE_GROUND;
+
+      // Force immediate sync on state transition (jump start/landing)
+      const stateChanged = isAirborne !== this.lastAirborneState;
+      this.lastAirborneState = isAirborne;
+
+      if (stateChanged || (now - this.lastNetworkUpdateTime >= this.networkUpdateInterval)) {
         networkManager.sendPlayerUpdate(
           this.localPlayer.x,
           this.localPlayer.y,
           this.localPlayer.flipX,
-          this.localPlayer.anims.currentAnim?.key || "dino-idle"
+          this.localPlayer.anims.currentAnim?.key || "dino-idle",
+          velocityY,
+          isAirborne
         );
         this.lastNetworkUpdateTime = now;
       }
     }
 
-    // Check if fell out of world
-    if (this.localPlayer.y > this.currentLevel.height && !this.isInvincible) {
-      this.handleDeath();
+    // Check for death - pit fall or fell off world
+    if (!this.isInvincible) {
+      const playerX = this.localPlayer.x;
+      const playerY = this.localPlayer.y;
+      const floorY = this.currentLevel.height - 16;
+
+      // Check if in a pit zone
+      const pits = this.currentLevel.pits || [];
+      const inPitZone = pits.some(pit => playerX >= pit.start && playerX <= pit.end);
+
+      if (inPitZone) {
+        // In pit zone - die if fallen below floor level + buffer
+        if (playerY > floorY + 32) {
+          this.handleDeath();
+        }
+      } else {
+        // Not in pit - fallback for world edge
+        if (playerY > this.currentLevel.height + 100) {
+          this.handleDeath();
+        }
+      }
     }
   }
 

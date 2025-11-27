@@ -121,7 +121,7 @@ export const LEVELS: LevelData[] = [
       { x: 1250, y: 300, range: 80, enemyType: 'flying' },
       { x: 1500, y: 330, range: 100, enemyType: 'tank' },
       { x: 1850, y: 270, range: 120, enemyType: 'flying' },
-      { x: 2200, y: 430, range: 150, enemyType: 'fast' },
+      { x: 2200, y: 430, range: 150, enemyType: 'raptor' },  // Fast dinosaur!
       { x: 2450, y: 350, range: 100, enemyType: 'shooter' },
       { x: 2800, y: 370, range: 100, enemyType: 'tank' },
       { x: 3000, y: 550, range: 120, enemyType: 'basic' },
@@ -249,12 +249,12 @@ export const LEVELS: LevelData[] = [
       // Zone 5 - Asteroid Field
       { x: 3400, y: 550, range: 100, enemyType: 'fast' },
       { x: 3650, y: 450, range: 120, enemyType: 'flying' },
-      { x: 3850, y: 530, range: 100, enemyType: 'shooter' },
+      { x: 3850, y: 530, range: 150, enemyType: 'raptor' },  // Fast dinosaur!
       { x: 3700, y: 730, range: 80, enemyType: 'basic' },  // Lower route
       // Zone 6 - Gauntlet
       { x: 4300, y: 650, range: 100, enemyType: 'shooter' },
-      { x: 4500, y: 470, range: 120, enemyType: 'tank' },
-      { x: 4750, y: 550, range: 150, enemyType: 'fast' },
+      { x: 4500, y: 420, range: 200, enemyType: 'trex' },  // T-REX BOSS!
+      { x: 4750, y: 550, range: 150, enemyType: 'raptor' },  // Fast dinosaur!
       // Zone 7
       { x: 5150, y: 630, range: 100, enemyType: 'basic' },
       { x: 5300, y: 700, range: 120, enemyType: 'fast' },

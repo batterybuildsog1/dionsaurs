@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 
-export type EnemyType = 'basic' | 'fast' | 'tank' | 'flying' | 'shooter';
+export type EnemyType = 'basic' | 'fast' | 'tank' | 'flying' | 'shooter' | 'raptor' | 'trex';
 
 interface EnemyConfig {
   speed: number;
@@ -47,6 +47,20 @@ const ENEMY_CONFIGS: Record<EnemyType, EnemyConfig> = {
     scale: 1.1,
     canFly: false,
     shootInterval: 2000  // Shoots every 2 seconds
+  },
+  raptor: {
+    speed: 180,       // Fast and aggressive
+    health: 2,
+    color: 0x884422,  // Brown dinosaur
+    scale: 1,         // Already 48x48, so scale 1
+    canFly: false
+  },
+  trex: {
+    speed: 90,        // Slower but relentless
+    health: 5,        // Very tough
+    color: 0x664422,  // Dark brown
+    scale: 1,         // Already 80x80, so scale 1
+    canFly: false
   }
 };
 
@@ -136,6 +150,12 @@ export class Enemy extends Phaser.Physics.Arcade.Sprite {
         break;
       case 'shooter':
         this.play('enemy-shooter-idle', true);
+        break;
+      case 'raptor':
+        this.play('enemy-raptor-run', true);
+        break;
+      case 'trex':
+        this.play('enemy-trex-walk', true);
         break;
     }
   }
