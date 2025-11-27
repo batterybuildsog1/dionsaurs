@@ -21,6 +21,7 @@
     "phaser": "^3.90.0"
   },
   "devDependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@types/node": "^24.10.1",
     "concurrently": "^9.2.1",
     "typescript": "^5.9.3",

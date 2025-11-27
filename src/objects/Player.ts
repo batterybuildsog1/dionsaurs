@@ -386,12 +386,25 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
   }
 
   destroy(fromScene?: boolean) {
-    // Clean up timers
-    this.powerupTimers.forEach(timer => timer.destroy());
-    this.powerupTimers.clear();
+    // Clean up timers safely
+    if (this.powerupTimers && this.powerupTimers.size > 0) {
+      this.powerupTimers.forEach(timer => {
+        try {
+          timer.destroy();
+        } catch {
+          // Timer already destroyed
+        }
+      });
+      this.powerupTimers.clear();
+    }
 
     if (this.shieldGraphic) {
-      this.shieldGraphic.destroy();
+      try {
+        this.shieldGraphic.destroy();
+      } catch {
+        // Already destroyed
+      }
+      this.shieldGraphic = undefined;
     }
 
     super.destroy(fromScene);

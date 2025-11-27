@@ -71,7 +71,9 @@ export class Enemy extends Phaser.Physics.Arcade.Sprite {
     patrolDistance: number,
     type: EnemyType = 'basic'
   ) {
-    super(scene, x, y, 'enemy');
+    // Choose texture based on enemy type
+    const textureKey = type === 'basic' ? 'enemy' : `enemy-${type}`;
+    super(scene, x, y, textureKey);
 
     this.enemyType = type;
     const config = ENEMY_CONFIGS[type];
@@ -87,7 +89,10 @@ export class Enemy extends Phaser.Physics.Arcade.Sprite {
     scene.physics.add.existing(this);
 
     this.setCollideWorldBounds(true);
-    this.setTint(config.color);
+    // Only tint basic enemies (others have unique textures)
+    if (type === 'basic') {
+      this.setTint(config.color);
+    }
     this.setScale(config.scale);
 
     const body = this.body as Phaser.Physics.Arcade.Body;
@@ -110,16 +115,47 @@ export class Enemy extends Phaser.Physics.Arcade.Sprite {
         loop: true
       });
     }
+
+    // Start the appropriate animation
+    this.playAnimation();
+  }
+
+  private playAnimation() {
+    switch (this.enemyType) {
+      case 'basic':
+        this.play('enemy-walk', true);
+        break;
+      case 'fast':
+        this.play('enemy-fast-fly', true);
+        break;
+      case 'tank':
+        this.play('enemy-tank-walk', true);
+        break;
+      case 'flying':
+        this.play('enemy-flying-float', true);
+        break;
+      case 'shooter':
+        this.play('enemy-shooter-idle', true);
+        break;
+    }
   }
 
   private shoot() {
     if (!this.active || !this.projectiles) return;
 
-    const projectile = this.scene.add.circle(
+    // Play shooting animation
+    this.play('enemy-shooter-shoot', true);
+    this.once('animationcomplete', () => {
+      if (this.active) {
+        this.play('enemy-shooter-idle', true);
+      }
+    });
+
+    // Create projectile using the projectile texture
+    const projectile = this.scene.add.sprite(
       this.x + (this.direction * 20),
       this.y,
-      6,
-      0x00ff00
+      'projectile'
     );
 
     this.scene.physics.add.existing(projectile);
@@ -145,7 +181,12 @@ export class Enemy extends Phaser.Physics.Arcade.Sprite {
       this.setTint(0xffffff);
       this.scene.time.delayedCall(100, () => {
         if (this.active) {
-          this.setTint(ENEMY_CONFIGS[this.enemyType].color);
+          // Only restore tint for basic enemies (others have unique textures)
+          if (this.enemyType === 'basic') {
+            this.setTint(ENEMY_CONFIGS[this.enemyType].color);
+          } else {
+            this.clearTint();
+          }
         }
       });
       return false; // Not dead yet
@@ -185,9 +226,16 @@ export class Enemy extends Phaser.Physics.Arcade.Sprite {
   destroy(fromScene?: boolean) {
     if (this.shootTimer) {
       this.shootTimer.destroy();
+      this.shootTimer = undefined;
     }
-    if (this.projectiles) {
-      this.projectiles.clear(true, true);
+    if (this.projectiles && this.projectiles.scene) {
+      // Only clear if the group's scene still exists (not already destroyed)
+      try {
+        this.projectiles.clear(true, true);
+      } catch {
+        // Group already destroyed during scene shutdown
+      }
+      this.projectiles = undefined;
     }
     super.destroy(fromScene);
   }

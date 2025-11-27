@@ -9,6 +9,7 @@ import { LEVELS, LevelData } from "../data/levels";
 import { networkManager, PlayerState } from "../services/NetworkManager";
 import { GameState } from "../services/GameState";
 import { audioManager } from "../services/AudioManager";
+import { ProceduralAssets } from "../utils/ProceduralAssets";
 
 // Player colors for visual distinction
 const PLAYER_COLORS = [0x88ff88, 0xff8888, 0x8888ff, 0xffff88];
@@ -92,54 +93,9 @@ export class GameScene extends Phaser.Scene {
     // Preload audio (backup in case BootScene didn't load them)
     audioManager.preload(this);
 
-    this.load.spritesheet("player", "assets/dino.png", {
-      frameWidth: 32,
-      frameHeight: 32,
-    });
-    this.load.spritesheet("enemy", "assets/enemy.png", {
-      frameWidth: 32,
-      frameHeight: 32,
-    });
-    this.load.spritesheet("tiles", "assets/tiles.png", {
-      frameWidth: 32,
-      frameHeight: 32,
-    });
-
-    const eggGraphics = this.add.graphics();
-    eggGraphics.fillStyle(0xffff00);
-    eggGraphics.fillCircle(8, 8, 8);
-    eggGraphics.generateTexture("egg", 16, 16);
-    eggGraphics.destroy();
-
-    const exitGraphics = this.add.graphics();
-    exitGraphics.fillStyle(0x00ffff);
-    exitGraphics.fillRect(0, 0, 32, 64);
-    exitGraphics.generateTexture("exit", 32, 64);
-    exitGraphics.destroy();
-
-    const powerupGraphics = this.add.graphics();
-    powerupGraphics.fillStyle(0xffffff);
-    powerupGraphics.fillTriangle(0, 32, 16, 0, 32, 32);
-    powerupGraphics.generateTexture("powerup", 32, 32);
-    powerupGraphics.destroy();
-
-    // Create checkpoint texture (flag shape)
-    const checkpointGraphics = this.add.graphics();
-    checkpointGraphics.fillStyle(0xffffff);
-    checkpointGraphics.fillRect(0, 0, 8, 48); // Pole
-    checkpointGraphics.fillRect(8, 0, 24, 20); // Flag
-    checkpointGraphics.generateTexture("checkpoint", 32, 48);
-    checkpointGraphics.destroy();
-
-    // Create life pickup texture (heart shape)
-    const lifeGraphics = this.add.graphics();
-    lifeGraphics.fillStyle(0xff0066);
-    // Simple heart using circles and triangle
-    lifeGraphics.fillCircle(8, 8, 8);
-    lifeGraphics.fillCircle(24, 8, 8);
-    lifeGraphics.fillTriangle(0, 10, 32, 10, 16, 28);
-    lifeGraphics.generateTexture("life", 32, 32);
-    lifeGraphics.destroy();
+    // Generate all procedural game assets (enhanced pixel art style)
+    const proceduralAssets = new ProceduralAssets(this);
+    proceduralAssets.generateAll();
   }
 
   create() {
@@ -616,6 +572,7 @@ export class GameScene extends Phaser.Scene {
   private createAnimations() {
     if (this.anims.exists("dino-idle")) return;
 
+    // Player animations
     this.anims.create({
       key: "dino-idle",
       frames: this.anims.generateFrameNumbers("player", { start: 0, end: 0 }),
@@ -636,16 +593,55 @@ export class GameScene extends Phaser.Scene {
     });
     this.anims.create({
       key: "dino-attack",
-      frames: this.anims.generateFrameNumbers("player", { start: 4, end: 4 }),
+      frames: this.anims.generateFrameNumbers("player", { start: 4, end: 5 }),
       frameRate: 10,
       repeat: 0,
     });
 
+    // Basic enemy (red slime)
     this.anims.create({
       key: "enemy-walk",
-      frames: this.anims.generateFrameNumbers("enemy", { start: 0, end: 1 }),
+      frames: this.anims.generateFrameNumbers("enemy", { start: 0, end: 2 }),
       frameRate: 6,
       repeat: -1,
+    });
+
+    // Fast enemy (yellow bat)
+    this.anims.create({
+      key: "enemy-fast-fly",
+      frames: this.anims.generateFrameNumbers("enemy-fast", { start: 0, end: 1 }),
+      frameRate: 12,
+      repeat: -1,
+    });
+
+    // Tank enemy (armored beetle)
+    this.anims.create({
+      key: "enemy-tank-walk",
+      frames: this.anims.generateFrameNumbers("enemy-tank", { start: 0, end: 2 }),
+      frameRate: 4,
+      repeat: -1,
+    });
+
+    // Flying enemy (purple ghost)
+    this.anims.create({
+      key: "enemy-flying-float",
+      frames: this.anims.generateFrameNumbers("enemy-flying", { start: 0, end: 2 }),
+      frameRate: 6,
+      repeat: -1,
+    });
+
+    // Shooter enemy (green plant)
+    this.anims.create({
+      key: "enemy-shooter-idle",
+      frames: this.anims.generateFrameNumbers("enemy-shooter", { start: 0, end: 0 }),
+      frameRate: 1,
+      repeat: -1,
+    });
+    this.anims.create({
+      key: "enemy-shooter-shoot",
+      frames: this.anims.generateFrameNumbers("enemy-shooter", { start: 1, end: 2 }),
+      frameRate: 4,
+      repeat: 0,
     });
   }
 
@@ -722,8 +718,13 @@ export class GameScene extends Phaser.Scene {
       this.showFloatingScore(enemyX, enemyY, scoreBonus, '#ff4444');
 
       // Clean up shooter projectiles before destroying
-      if (e.projectiles) {
-        e.projectiles.clear(true, true);
+      if (e.projectiles && e.projectiles.scene) {
+        try {
+          e.projectiles.clear(true, true);
+        } catch {
+          // Already destroyed
+        }
+        e.projectiles = undefined;
       }
 
       // Enemy death animation - squash, spin, and fade before destroy
