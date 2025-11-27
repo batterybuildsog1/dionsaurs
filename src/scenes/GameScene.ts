@@ -10,6 +10,8 @@ import { networkManager, PlayerState } from "../services/NetworkManager";
 import { GameState } from "../services/GameState";
 import { audioManager } from "../services/AudioManager";
 import { ProceduralAssets } from "../utils/ProceduralAssets";
+import { scoreManager, ScoreManager } from "../services/ScoreManager";
+import { PlayerStats } from "../services/PlayerStats";
 
 // Player colors for visual distinction
 const PLAYER_COLORS = [0x88ff88, 0xff8888, 0x8888ff, 0xffff88];
@@ -49,6 +51,11 @@ export class GameScene extends Phaser.Scene {
   private sceneShuttingDown: boolean = false;
   private exitTriggered: boolean = false; // Debounce exit overlap
 
+  // Player stats tracking
+  private localPlayerStats!: PlayerStats;
+  private firstToExitClaimed: boolean = false;
+  private levelTimer!: Phaser.GameObjects.Text;
+
   constructor() {
     super("GameScene");
     this.currentLevel = LEVELS[0];
@@ -87,6 +94,11 @@ export class GameScene extends Phaser.Scene {
 
     // Reset invincibility state
     this.isInvincible = false;
+
+    // Reset score manager for new level
+    scoreManager.reset();
+    scoreManager.setLevel(this.currentLevel.id);
+    this.firstToExitClaimed = false;
   }
 
   preload() {
@@ -226,6 +238,22 @@ export class GameScene extends Phaser.Scene {
         color: "#ff6666",
       })
       .setScrollFactor(0);
+
+    // Timer display (top right)
+    this.levelTimer = this.add
+      .text(this.cameras.main.width - 16, 16, "0:00", {
+        fontSize: "24px",
+        color: "#ffffff",
+        backgroundColor: "#00000088",
+      })
+      .setOrigin(1, 0)
+      .setScrollFactor(0);
+
+    // Initialize local player stats
+    const playerId = this.isMultiplayer ? networkManager.myPlayerId : 'local';
+    const playerNumber = this.isMultiplayer ? networkManager.myPlayerNumber : 1;
+    this.localPlayerStats = scoreManager.addPlayer(playerId, playerNumber, `P${playerNumber}`);
+    this.localPlayerStats.setLivesRemaining(GameState.getLives());
 
     // Theme adjustments
     this.applyTheme();
@@ -381,6 +409,17 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  // Get interpolation config based on movement state (physics-aware easing)
+  private getInterpolationConfig(isAirborne: boolean, velocityY: number): { duration: number; ease: string } {
+    if (!isAirborne) {
+      return { duration: 40, ease: 'Sine.out' };  // Ground: smooth
+    }
+    // Airborne: use physics-appropriate easing
+    return velocityY < 0
+      ? { duration: 25, ease: 'Quad.out' }   // Rising: deceleration
+      : { duration: 25, ease: 'Quad.in' };   // Falling: acceleration
+  }
+
   private setupNetworkListeners() {
     // Handle player position updates
     networkManager.on("playerUpdate", (data) => {
@@ -414,13 +453,14 @@ export class GameScene extends Phaser.Scene {
           existingTween.stop();
         }
 
-        // Create new tween and store reference
+        // Create new tween with state-based interpolation
+        const config = this.getInterpolationConfig(data.isAirborne ?? false, data.velocityY ?? 0);
         const newTween = this.tweens.add({
           targets: remotePlayer,
           x: data.x,
           y: data.y,
-          duration: 30, // Match the 33ms update interval for smooth motion
-          ease: 'Linear'
+          duration: config.duration,
+          ease: config.ease
         });
         this.remotePlayerTweens.set(data.playerId, newTween);
         this.remotePlayerLastPos.set(data.playerId, { x: data.x, y: data.y });
@@ -475,11 +515,27 @@ export class GameScene extends Phaser.Scene {
           // Sync egg collection
           break;
         case "PLAYER_AT_EXIT":
-          // Remote player reached the exit
+          // Remote player reached the exit - import their stats
           console.log(`[EXIT-SYNC] Received PLAYER_AT_EXIT from ${data.data.playerId}`);
           console.log(`[EXIT-SYNC] Players at exit before: ${Array.from(this.playersAtExit).join(", ")}`);
           this.playersAtExit.add(data.data.playerId);
           console.log(`[EXIT-SYNC] Players at exit after: ${Array.from(this.playersAtExit).join(", ")}`);
+
+          // Import remote player's stats into scoreManager
+          if (data.data.stats) {
+            const remoteStats = data.data.stats;
+            let playerStats = scoreManager.getPlayer(remoteStats.playerId);
+            if (!playerStats) {
+              playerStats = scoreManager.addPlayer(
+                remoteStats.playerId,
+                remoteStats.playerNumber,
+                remoteStats.playerName
+              );
+            }
+            playerStats.updateFromData(remoteStats);
+            console.log(`[STATS] Imported stats for ${remoteStats.playerName}`);
+          }
+
           this.checkAllPlayersAtExit();
           break;
         case "PLAYER_DIED":
@@ -648,6 +704,12 @@ export class GameScene extends Phaser.Scene {
   update() {
     this.localPlayer.update();
 
+    // Update timer display
+    if (this.localPlayerStats && this.levelTimer) {
+      const elapsed = Date.now() - this.localPlayerStats.getData().levelStartTime;
+      this.levelTimer.setText(ScoreManager.formatTime(elapsed));
+    }
+
     // Update remote players
     this.remotePlayers.forEach((player) => {
       player.update();
@@ -713,6 +775,11 @@ export class GameScene extends Phaser.Scene {
       this.score += scoreBonus;
       GameState.setScore(this.score);
       this.scoreText.setText("Score: " + this.score);
+
+      // Track stat - record kill by enemy type
+      if (this.localPlayerStats) {
+        this.localPlayerStats.killEnemy(e.enemyType);
+      }
 
       // Show floating score with red color for enemy kills
       this.showFloatingScore(enemyX, enemyY, scoreBonus, '#ff4444');
@@ -788,6 +855,10 @@ export class GameScene extends Phaser.Scene {
 
     // Check for shield - absorbs one hit
     if (p.hasShield && p.useShield()) {
+      // Track shield block stat
+      if (this.localPlayerStats) {
+        this.localPlayerStats.blockDamage();
+      }
       // Shield absorbed the hit, grant brief invincibility
       this.isInvincible = true;
       this.time.delayedCall(1000, () => {
@@ -813,6 +884,10 @@ export class GameScene extends Phaser.Scene {
 
     // Check for shield - absorbs one hit
     if (p.hasShield && p.useShield()) {
+      // Track shield block stat
+      if (this.localPlayerStats) {
+        this.localPlayerStats.blockDamage();
+      }
       this.isInvincible = true;
       this.time.delayedCall(1000, () => {
         this.isInvincible = false;
@@ -833,6 +908,12 @@ export class GameScene extends Phaser.Scene {
 
     const remainingLives = GameState.decrementLives();
     this.livesText.setText(`Lives: ${remainingLives}`);
+
+    // Track death stat
+    if (this.localPlayerStats) {
+      this.localPlayerStats.die();
+      this.localPlayerStats.setLivesRemaining(remainingLives);
+    }
 
     // Stop this player only (don't affect global physics in multiplayer)
     this.localPlayer.setVelocity(0, 0);
@@ -915,6 +996,11 @@ export class GameScene extends Phaser.Scene {
       spawnY = this.currentLevel.height - 150;
     }
 
+    // Track respawn stat (for time-alive calculation)
+    if (this.localPlayerStats) {
+      this.localPlayerStats.respawn();
+    }
+
     // Reset player state
     this.localPlayer.setPosition(spawnX, spawnY);
     this.localPlayer.setVelocity(0, 0);
@@ -963,6 +1049,17 @@ export class GameScene extends Phaser.Scene {
     if (!cp.isActivated) {
       cp.activate();
       this._lastCheckpoint = { x: cp.x, y: cp.y + 24 }; // Store ground position
+
+      // Track checkpoint stat - check if first to reach
+      if (this.localPlayerStats) {
+        const playerId = this.isMultiplayer ? networkManager.myPlayerId : 'local';
+        const isFirst = scoreManager.claimCheckpoint(playerId, cp.x, cp.y);
+        this.localPlayerStats.reachCheckpoint(isFirst);
+
+        if (isFirst) {
+          this.showFloatingText(cp.x, cp.y - 40, 'FIRST!', '#ffff00');
+        }
+      }
     }
   }
 
@@ -1112,6 +1209,11 @@ export class GameScene extends Phaser.Scene {
     GameState.setScore(this.score);
     this.scoreText.setText("Score: " + this.score);
 
+    // Track stat
+    if (this.localPlayerStats) {
+      this.localPlayerStats.collectEgg();
+    }
+
     // Play collect sound and show floating score
     audioManager.play('collect');
     this.showFloatingScore(eggX, eggY, 10);
@@ -1133,6 +1235,11 @@ export class GameScene extends Phaser.Scene {
 
     pl.activatePowerUp(p.type);
     p.destroy();
+
+    // Track stat
+    if (this.localPlayerStats) {
+      this.localPlayerStats.collectPowerup();
+    }
 
     // Play powerup sound and show floating text with powerup name
     audioManager.play('powerup');
@@ -1179,13 +1286,25 @@ export class GameScene extends Phaser.Scene {
 
     console.log(`[EXIT-SYNC] reachExit() called, isMultiplayer: ${this.isMultiplayer}`);
 
-    // In multiplayer, tell server we're at exit - server handles the rest
+    // Track exit stat - check if first to reach
+    if (this.localPlayerStats) {
+      const isFirst = !this.firstToExitClaimed;
+      this.firstToExitClaimed = true;
+      this.localPlayerStats.reachExit(isFirst);
+
+      if (isFirst) {
+        this.showFloatingText(this.localPlayer.x, this.localPlayer.y - 60, 'FIRST TO FINISH!', '#00ff00');
+      }
+    }
+
+    // In multiplayer, tell server we're at exit with our stats
     if (this.isMultiplayer) {
       const myId = networkManager.myPlayerId;
-      console.log(`[EXIT-SYNC] Sending PLAYER_AT_EXIT to server`);
+      console.log(`[EXIT-SYNC] Sending PLAYER_AT_EXIT to server with stats`);
 
-      // Send to server - server will track and broadcast ALL_AT_EXIT when everyone's there
-      networkManager.sendGameEvent("PLAYER_AT_EXIT", { playerId: myId });
+      // Send stats along with exit event
+      const statsData = this.localPlayerStats ? this.localPlayerStats.getData() : null;
+      networkManager.sendGameEvent("PLAYER_AT_EXIT", { playerId: myId, stats: statsData });
 
       // Show waiting overlay
       this.showWaitingOverlay();
@@ -1276,26 +1395,102 @@ export class GameScene extends Phaser.Scene {
       localStorage.setItem("dino_unlocked_level", nextLevelId.toString());
     }
 
+    // Calculate rankings
+    const rankingResult = scoreManager.calculateRankings();
+    const rankings = rankingResult.rankings;
+    const teamStats = rankingResult.teamStats;
+    const isMultiplayerGame = rankings.length > 1;
+
+    // Determine overlay height based on content
+    const overlayHeight = isMultiplayerGame ? 500 : 380;
+    const cx = this.cameras.main.width / 2;
+    const cy = this.cameras.main.height / 2;
+
     // Dark overlay
-    const overlay = this.add.rectangle(0, 0, 500, 350, 0x000000, 0.85);
+    const overlay = this.add.rectangle(0, 0, 550, overlayHeight, 0x000000, 0.92);
     overlay.setScrollFactor(0);
-    overlay.setPosition(this.cameras.main.width / 2, this.cameras.main.height / 2);
+    overlay.setPosition(cx, cy);
+
+    let yOffset = cy - overlayHeight / 2 + 30;
 
     // Level complete text
-    this.add.text(
-      this.cameras.main.width / 2,
-      this.cameras.main.height / 2 - 100,
-      "LEVEL COMPLETE!",
-      { fontSize: "42px", color: "#4CAF50", fontStyle: "bold" }
-    ).setOrigin(0.5).setScrollFactor(0);
+    this.add.text(cx, yOffset, "LEVEL COMPLETE!", {
+      fontSize: "36px",
+      color: "#4CAF50",
+      fontStyle: "bold"
+    }).setOrigin(0.5).setScrollFactor(0);
+    yOffset += 45;
 
-    // Score text
-    this.add.text(
-      this.cameras.main.width / 2,
-      this.cameras.main.height / 2 - 40,
-      `Score: ${this.score}`,
-      { fontSize: "28px", color: "#ffffff" }
-    ).setOrigin(0.5).setScrollFactor(0);
+    // Show rankings for multiplayer, or single player stats
+    if (isMultiplayerGame) {
+      // Multiplayer leaderboard
+      this.add.text(cx, yOffset, "RANKINGS", {
+        fontSize: "20px",
+        color: "#ffff00",
+        fontStyle: "bold"
+      }).setOrigin(0.5).setScrollFactor(0);
+      yOffset += 30;
+
+      // Player rankings
+      rankings.forEach((player, index) => {
+        const rankColors = ['#ffd700', '#c0c0c0', '#cd7f32', '#ffffff']; // Gold, Silver, Bronze, White
+        const rankColor = rankColors[Math.min(index, 3)];
+        const totalKills = Object.values(player.enemiesKilled).reduce((s, c) => s + c, 0);
+        const timeStr = player.reachedExit ? ScoreManager.formatTime(player.levelEndTime - player.levelStartTime) : '--:--';
+
+        // MVP badges
+        const mvpBadges = player.mvpAwards.map(a => ScoreManager.getMvpEmoji(a)).join(' ');
+
+        const rankText = `#${player.rank} ${player.playerName}: ${player.totalScore} pts`;
+        const statsText = `${player.eggsCollected} eggs | ${totalKills} kills | ${player.deaths} deaths | ${timeStr}`;
+
+        this.add.text(cx, yOffset, rankText + (mvpBadges ? ' ' + mvpBadges : ''), {
+          fontSize: "18px",
+          color: rankColor,
+          fontStyle: index === 0 ? "bold" : "normal"
+        }).setOrigin(0.5).setScrollFactor(0);
+        yOffset += 22;
+
+        this.add.text(cx, yOffset, statsText, {
+          fontSize: "14px",
+          color: "#aaaaaa"
+        }).setOrigin(0.5).setScrollFactor(0);
+        yOffset += 28;
+      });
+
+      // Team totals
+      yOffset += 10;
+      this.add.text(cx, yOffset, `Team: ${teamStats.totalEggs} eggs | ${teamStats.totalKills} kills | ${ScoreManager.formatTime(teamStats.totalTime)}`, {
+        fontSize: "16px",
+        color: "#88ff88"
+      }).setOrigin(0.5).setScrollFactor(0);
+      yOffset += 35;
+    } else {
+      // Single player stats
+      const player = rankings[0];
+      if (player) {
+        const totalKills = Object.values(player.enemiesKilled).reduce((s, c) => s + c, 0);
+        const timeStr = ScoreManager.formatTime(player.levelEndTime - player.levelStartTime);
+
+        this.add.text(cx, yOffset, `Score: ${player.totalScore}`, {
+          fontSize: "28px",
+          color: "#ffffff"
+        }).setOrigin(0.5).setScrollFactor(0);
+        yOffset += 40;
+
+        this.add.text(cx, yOffset, `Time: ${timeStr}  |  Eggs: ${player.eggsCollected}  |  Kills: ${totalKills}`, {
+          fontSize: "18px",
+          color: "#aaaaaa"
+        }).setOrigin(0.5).setScrollFactor(0);
+        yOffset += 25;
+
+        this.add.text(cx, yOffset, `Deaths: ${player.deaths}  |  Lives: ${player.livesRemaining}`, {
+          fontSize: "18px",
+          color: "#aaaaaa"
+        }).setOrigin(0.5).setScrollFactor(0);
+        yOffset += 40;
+      }
+    }
 
     // Continue button (if there's a next level)
     if (hasNextLevel) {
@@ -1305,18 +1500,14 @@ export class GameScene extends Phaser.Scene {
       if (this.isMultiplayer) {
         if (networkManager.isHost) {
           // Host sees the Continue button
-          const continueBtn = this.add.rectangle(
-            this.cameras.main.width / 2,
-            this.cameras.main.height / 2 + 30,
-            280, 50, 0x4CAF50
-          ).setScrollFactor(0).setInteractive({ useHandCursor: true });
+          const continueBtn = this.add.rectangle(cx, yOffset, 280, 50, 0x4CAF50)
+            .setScrollFactor(0).setInteractive({ useHandCursor: true });
 
-          this.add.text(
-            this.cameras.main.width / 2,
-            this.cameras.main.height / 2 + 30,
-            `Continue to ${nextLevelName}`,
-            { fontSize: "20px", color: "#ffffff", fontStyle: "bold" }
-          ).setOrigin(0.5).setScrollFactor(0);
+          this.add.text(cx, yOffset, `Continue to ${nextLevelName}`, {
+            fontSize: "20px",
+            color: "#ffffff",
+            fontStyle: "bold"
+          }).setOrigin(0.5).setScrollFactor(0);
 
           continueBtn.on('pointerover', () => continueBtn.setFillStyle(0x66BB6A));
           continueBtn.on('pointerout', () => continueBtn.setFillStyle(0x4CAF50));
@@ -1324,36 +1515,31 @@ export class GameScene extends Phaser.Scene {
             if (this.sceneShuttingDown) return;
             this.sceneShuttingDown = true;
             console.log(`[EXIT-SYNC] Host clicked Continue - broadcasting NEXT_LEVEL: ${nextLevelId}`);
-            // Broadcast next level to all players
             networkManager.sendGameEvent("NEXT_LEVEL", { levelId: nextLevelId });
             this.scene.start("GameScene", {
               levelId: nextLevelId,
               isMultiplayer: true,
             });
           });
+          yOffset += 60;
         } else {
           // Non-host sees waiting message
-          this.add.text(
-            this.cameras.main.width / 2,
-            this.cameras.main.height / 2 + 30,
-            "Waiting for host to continue...",
-            { fontSize: "18px", color: "#aaaaaa" }
-          ).setOrigin(0.5).setScrollFactor(0);
+          this.add.text(cx, yOffset, "Waiting for host to continue...", {
+            fontSize: "18px",
+            color: "#aaaaaa"
+          }).setOrigin(0.5).setScrollFactor(0);
+          yOffset += 40;
         }
       } else {
         // Single player - normal Continue button
-        const continueBtn = this.add.rectangle(
-          this.cameras.main.width / 2,
-          this.cameras.main.height / 2 + 30,
-          280, 50, 0x4CAF50
-        ).setScrollFactor(0).setInteractive({ useHandCursor: true });
+        const continueBtn = this.add.rectangle(cx, yOffset, 280, 50, 0x4CAF50)
+          .setScrollFactor(0).setInteractive({ useHandCursor: true });
 
-        this.add.text(
-          this.cameras.main.width / 2,
-          this.cameras.main.height / 2 + 30,
-          `Continue to ${nextLevelName}`,
-          { fontSize: "20px", color: "#ffffff", fontStyle: "bold" }
-        ).setOrigin(0.5).setScrollFactor(0);
+        this.add.text(cx, yOffset, `Continue to ${nextLevelName}`, {
+          fontSize: "20px",
+          color: "#ffffff",
+          fontStyle: "bold"
+        }).setOrigin(0.5).setScrollFactor(0);
 
         continueBtn.on('pointerover', () => continueBtn.setFillStyle(0x66BB6A));
         continueBtn.on('pointerout', () => continueBtn.setFillStyle(0x4CAF50));
@@ -1366,26 +1552,18 @@ export class GameScene extends Phaser.Scene {
             isMultiplayer: false,
           });
         });
+        yOffset += 60;
       }
     }
 
     // Back to Menu button
-    const menuBtnY = hasNextLevel
-      ? this.cameras.main.height / 2 + 100
-      : this.cameras.main.height / 2 + 30;
+    const menuBtn = this.add.rectangle(cx, yOffset, 200, 45, 0x666666)
+      .setScrollFactor(0).setInteractive({ useHandCursor: true });
 
-    const menuBtn = this.add.rectangle(
-      this.cameras.main.width / 2,
-      menuBtnY,
-      200, 45, 0x666666
-    ).setScrollFactor(0).setInteractive({ useHandCursor: true });
-
-    this.add.text(
-      this.cameras.main.width / 2,
-      menuBtnY,
-      "Back to Menu",
-      { fontSize: "18px", color: "#ffffff" }
-    ).setOrigin(0.5).setScrollFactor(0);
+    this.add.text(cx, yOffset, "Back to Menu", {
+      fontSize: "18px",
+      color: "#ffffff"
+    }).setOrigin(0.5).setScrollFactor(0);
 
     menuBtn.on('pointerover', () => menuBtn.setFillStyle(0x888888));
     menuBtn.on('pointerout', () => menuBtn.setFillStyle(0x666666));

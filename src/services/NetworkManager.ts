@@ -1,4 +1,5 @@
 import PartySocket from "partysocket";
+import { PlayerStatsData } from "./PlayerStats";
 
 export interface PlayerState {
   id: string;
@@ -9,6 +10,8 @@ export interface PlayerState {
   flipX: boolean;
   anim: string;
   isReady: boolean;
+  velocityY?: number;    // For jump state detection
+  isAirborne?: boolean;  // Ground vs air movement state
 }
 
 export interface RoomInfo {
@@ -330,12 +333,23 @@ class NetworkManager {
     }
   }
 
-  public sendPlayerUpdate(x: number, y: number, flipX: boolean, anim: string) {
-    this.send({ type: "PLAYER_UPDATE", x, y, flipX, anim });
+  public sendPlayerUpdate(
+    x: number,
+    y: number,
+    flipX: boolean,
+    anim: string,
+    velocityY: number = 0,
+    isAirborne: boolean = false
+  ) {
+    this.send({ type: "PLAYER_UPDATE", x, y, flipX, anim, velocityY, isAirborne });
   }
 
   public sendGameEvent(event: string, eventData: any) {
     this.send({ type: "GAME_EVENT", event, data: eventData });
+  }
+
+  public sendPlayerStats(stats: PlayerStatsData) {
+    this.send({ type: "GAME_EVENT", event: "PLAYER_STATS", data: { playerId: this.myPlayerId, stats } });
   }
 
   public returnToLobby() {

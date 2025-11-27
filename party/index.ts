@@ -31,7 +31,7 @@ interface RoomState {
 type ClientMessage =
   | { type: "SET_PLAYER_NAME"; name: string }
   | { type: "SET_ROOM_NAME"; name: string }
-  | { type: "PLAYER_UPDATE"; x: number; y: number; flipX: boolean; anim: string }
+  | { type: "PLAYER_UPDATE"; x: number; y: number; flipX: boolean; anim: string; velocityY?: number; isAirborne?: boolean }
   | { type: "PLAYER_READY"; isReady: boolean }
   | { type: "START_GAME"; levelId?: number }
   | { type: "GAME_EVENT"; event: string; data: any }
@@ -354,6 +354,8 @@ export default class GameRoom implements Party.Server {
                 y: data.y,
                 flipX: data.flipX,
                 anim: data.anim,
+                velocityY: data.velocityY ?? 0,
+                isAirborne: data.isAirborne ?? false,
               }),
               [sender.id]
             );

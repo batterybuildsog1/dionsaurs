@@ -20,6 +20,7 @@ export class ProceduralAssets {
     this.generateEnemyTank();
     this.generateEnemyFlying();
     this.generateEnemyShooter();
+    // Note: additional enemy types (raptor, trex) can be added later
     this.generateTiles();
     this.generateEgg();
     this.generateExit();
@@ -58,97 +59,161 @@ export class ProceduralAssets {
     let bodyY = 0;
     let legOffset = 0;
     let mouthOpen = false;
-    let armUp = false;
+    let tailWag = 0;
 
     switch (frame) {
       case 0: // Idle
         break;
       case 1: // Run 1
-        legOffset = 2;
+        legOffset = 3;
+        tailWag = 2;
         break;
       case 2: // Run 2
-        legOffset = -2;
+        legOffset = -3;
+        tailWag = -2;
         break;
       case 3: // Jump
         bodyY = -2;
-        armUp = true;
+        legOffset = -2;
         break;
       case 4: // Attack 1
         mouthOpen = true;
         break;
       case 5: // Attack 2
         mouthOpen = true;
-        legOffset = 1;
+        legOffset = 2;
         break;
       case 6: // Hurt
-        bodyY = 1;
+        bodyY = 2;
         break;
     }
 
-    // Shadow/outline
-    g.fillStyle(0x1a472a);
-    g.fillRoundedRect(x + 7, y + 9 + bodyY, 18, 16, 4);
+    // === TAIL (drawn first, behind body) ===
+    // Thick dinosaur tail
+    g.fillStyle(0x22a352);
+    g.beginPath();
+    g.moveTo(x + 4, y + 12 + bodyY + tailWag);
+    g.lineTo(x + 12, y + 10 + bodyY);
+    g.lineTo(x + 14, y + 16 + bodyY);
+    g.lineTo(x + 2, y + 18 + bodyY + tailWag);
+    g.closePath();
+    g.fillPath();
 
-    // Body - bright green
-    g.fillStyle(0x4ade80);
-    g.fillRoundedRect(x + 8, y + 8 + bodyY, 16, 14, 4);
+    // Tail tip
+    g.fillStyle(0x1a8a42);
+    g.fillTriangle(x + 0, y + 14 + bodyY + tailWag, x + 5, y + 12 + bodyY + tailWag, x + 3, y + 19 + bodyY + tailWag);
 
-    // Belly - lighter green
-    g.fillStyle(0x86efac);
-    g.fillRoundedRect(x + 10, y + 12 + bodyY, 10, 8, 3);
+    // === BACK LEG (behind body) ===
+    g.fillStyle(0x1a8a42);
+    g.fillRect(x + 12, y + 18 + bodyY, 5, 10 - legOffset);
+    // Back foot with claws
+    g.fillStyle(0x166534);
+    g.beginPath();
+    g.moveTo(x + 10, y + 27 + bodyY - legOffset);
+    g.lineTo(x + 19, y + 27 + bodyY - legOffset);
+    g.lineTo(x + 20, y + 30 + bodyY - legOffset);
+    g.lineTo(x + 16, y + 29 + bodyY - legOffset);
+    g.lineTo(x + 13, y + 30 + bodyY - legOffset);
+    g.lineTo(x + 9, y + 29 + bodyY - legOffset);
+    g.closePath();
+    g.fillPath();
 
-    // Head
-    g.fillStyle(0x4ade80);
-    g.fillRoundedRect(x + 16, y + 4 + bodyY, 12, 12, 4);
+    // === BODY ===
+    // Body shadow/outline
+    g.fillStyle(0x166534);
+    g.fillEllipse(x + 16, y + 14 + bodyY, 12, 10);
 
-    // Snout
-    g.fillStyle(0x4ade80);
-    g.fillRoundedRect(x + 22, y + 8 + bodyY, 6, 6, 2);
+    // Main body - bright green
+    g.fillStyle(0x2dd45e);
+    g.fillEllipse(x + 16, y + 13 + bodyY, 11, 9);
 
-    // Mouth
+    // Belly - lighter yellowish green
+    g.fillStyle(0x90e8a8);
+    g.fillEllipse(x + 17, y + 15 + bodyY, 7, 6);
+
+    // === FRONT LEG ===
+    g.fillStyle(0x22a352);
+    g.fillRect(x + 18, y + 18 + bodyY, 5, 10 + legOffset);
+    // Front foot with claws
+    g.fillStyle(0x166534);
+    g.beginPath();
+    g.moveTo(x + 16, y + 27 + bodyY + legOffset);
+    g.lineTo(x + 25, y + 27 + bodyY + legOffset);
+    g.lineTo(x + 26, y + 30 + bodyY + legOffset);
+    g.lineTo(x + 22, y + 29 + bodyY + legOffset);
+    g.lineTo(x + 19, y + 30 + bodyY + legOffset);
+    g.lineTo(x + 15, y + 29 + bodyY + legOffset);
+    g.closePath();
+    g.fillPath();
+
+    // === HEAD ===
+    // Head outline
+    g.fillStyle(0x166534);
+    g.fillEllipse(x + 24, y + 8 + bodyY, 9, 8);
+
+    // Main head - matches body
+    g.fillStyle(0x2dd45e);
+    g.fillEllipse(x + 24, y + 7 + bodyY, 8, 7);
+
+    // Snout/jaw - distinctive dino shape
+    g.fillStyle(0x2dd45e);
+    g.fillEllipse(x + 28, y + 10 + bodyY, 5, 4);
+
+    // Lower jaw
+    g.fillStyle(0x22a352);
+    g.fillEllipse(x + 27, y + 12 + bodyY, 4, 2);
+
+    // Mouth opening with teeth
     if (mouthOpen) {
-      g.fillStyle(0xff6b6b);
-      g.fillRect(x + 24, y + 12 + bodyY, 4, 3);
+      // Open mouth
+      g.fillStyle(0xff5555);
+      g.fillEllipse(x + 29, y + 11 + bodyY, 3, 3);
+      // Teeth
+      g.fillStyle(0xffffff);
+      g.fillTriangle(x + 27, y + 10 + bodyY, x + 28, y + 12 + bodyY, x + 29, y + 10 + bodyY);
+      g.fillTriangle(x + 29, y + 10 + bodyY, x + 30, y + 12 + bodyY, x + 31, y + 10 + bodyY);
+    } else {
+      // Closed mouth line
+      g.lineStyle(1, 0x166534);
+      g.lineBetween(x + 25, y + 11 + bodyY, x + 31, y + 11 + bodyY);
     }
+
+    // Eye socket (slight indent)
+    g.fillStyle(0x22a352);
+    g.fillCircle(x + 24, y + 6 + bodyY, 3);
 
     // Eye white
     g.fillStyle(0xffffff);
-    g.fillCircle(x + 22, y + 8 + bodyY, 3);
+    g.fillCircle(x + 24, y + 6 + bodyY, 2.5);
 
-    // Pupil
+    // Pupil - looking forward
     g.fillStyle(0x000000);
-    g.fillCircle(x + 23, y + 8 + bodyY, 1.5);
+    g.fillCircle(x + 25, y + 6 + bodyY, 1.5);
 
     // Eye highlight
     g.fillStyle(0xffffff);
-    g.fillCircle(x + 22, y + 7 + bodyY, 0.8);
+    g.fillCircle(x + 24, y + 5 + bodyY, 0.8);
 
-    // Tail
-    g.fillStyle(0x4ade80);
-    g.fillTriangle(x + 6, y + 14 + bodyY, x + 12, y + 12 + bodyY, x + 10, y + 20 + bodyY);
-
-    // Legs
-    g.fillStyle(0x22c55e);
-    g.fillRect(x + 10, y + 20 + bodyY, 4, 8 + legOffset);
-    g.fillRect(x + 18, y + 20 + bodyY, 4, 8 - legOffset);
-
-    // Feet
+    // Nostril
     g.fillStyle(0x166534);
-    g.fillRoundedRect(x + 8, y + 26 + bodyY + legOffset, 6, 4, 2);
-    g.fillRoundedRect(x + 16, y + 26 + bodyY - legOffset, 6, 4, 2);
+    g.fillCircle(x + 30, y + 8 + bodyY, 0.8);
 
-    // Arms
-    g.fillStyle(0x22c55e);
-    if (armUp) {
-      g.fillRect(x + 12, y + 6 + bodyY, 3, 6);
-    } else {
-      g.fillRect(x + 8, y + 14 + bodyY, 4, 3);
-    }
-
-    // Spikes on back
+    // === TINY T-REX ARMS ===
+    g.fillStyle(0x22a352);
+    // Upper arm
+    g.fillRect(x + 20, y + 10 + bodyY, 3, 4);
+    // Lower arm/hand with tiny claws
+    g.fillStyle(0x1a8a42);
+    g.fillRect(x + 21, y + 13 + bodyY, 2, 3);
     g.fillStyle(0x166534);
-    g.fillTriangle(x + 12, y + 4 + bodyY, x + 14, y + 8 + bodyY, x + 16, y + 4 + bodyY);
-    g.fillTriangle(x + 16, y + 2 + bodyY, x + 18, y + 6 + bodyY, x + 20, y + 2 + bodyY);
+    g.fillCircle(x + 22, y + 16 + bodyY, 1);
+
+    // === BACK RIDGE/SPIKES ===
+    g.fillStyle(0x166534);
+    // Three spikes along the back
+    g.fillTriangle(x + 10, y + 8 + bodyY, x + 12, y + 4 + bodyY, x + 14, y + 8 + bodyY);
+    g.fillTriangle(x + 14, y + 6 + bodyY, x + 16, y + 1 + bodyY, x + 18, y + 6 + bodyY);
+    g.fillTriangle(x + 18, y + 5 + bodyY, x + 20, y + 2 + bodyY, x + 22, y + 6 + bodyY);
   }
 
   /**
