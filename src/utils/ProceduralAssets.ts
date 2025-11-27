@@ -35,16 +35,22 @@ export class ProceduralAssets {
   private generatePlayer() {
     const frameWidth = 32;
     const frameHeight = 32;
-    const frames = 7;
+    const numFrames = 7;
     const g = this.scene.add.graphics();
 
-    for (let frame = 0; frame < frames; frame++) {
+    for (let frame = 0; frame < numFrames; frame++) {
       const offsetX = frame * frameWidth;
       this.drawDino(g, offsetX, 0, frame);
     }
 
-    g.generateTexture('player', frameWidth * frames, frameHeight);
+    g.generateTexture('player', frameWidth * numFrames, frameHeight);
     g.destroy();
+
+    // Add spritesheet frames to the texture
+    const texture = this.scene.textures.get('player');
+    for (let i = 0; i < numFrames; i++) {
+      texture.add(i, 0, i * frameWidth, 0, frameWidth, frameHeight);
+    }
   }
 
   private drawDino(g: Phaser.GameObjects.Graphics, x: number, y: number, frame: number) {
@@ -151,16 +157,23 @@ export class ProceduralAssets {
   private generateEnemy() {
     const frameWidth = 32;
     const frameHeight = 32;
+    const numFrames = 4;
     const g = this.scene.add.graphics();
 
     // Draw 4 walking frames
-    for (let frame = 0; frame < 4; frame++) {
+    for (let frame = 0; frame < numFrames; frame++) {
       const offsetX = frame * frameWidth;
       this.drawSlime(g, offsetX, 0, frame);
     }
 
-    g.generateTexture('enemy', frameWidth * 4, frameHeight);
+    g.generateTexture('enemy', frameWidth * numFrames, frameHeight);
     g.destroy();
+
+    // Add spritesheet frames to the texture
+    const texture = this.scene.textures.get('enemy');
+    for (let i = 0; i < numFrames; i++) {
+      texture.add(i, 0, i * frameWidth, 0, frameWidth, frameHeight);
+    }
   }
 
   private drawSlime(g: Phaser.GameObjects.Graphics, x: number, y: number, frame: number) {
@@ -231,15 +244,22 @@ export class ProceduralAssets {
   private generateEnemyFast() {
     const frameWidth = 32;
     const frameHeight = 32;
+    const numFrames = 4;
     const g = this.scene.add.graphics();
 
-    for (let frame = 0; frame < 4; frame++) {
+    for (let frame = 0; frame < numFrames; frame++) {
       const offsetX = frame * frameWidth;
       this.drawBat(g, offsetX, 0, frame);
     }
 
-    g.generateTexture('enemy-fast', frameWidth * 4, frameHeight);
+    g.generateTexture('enemy-fast', frameWidth * numFrames, frameHeight);
     g.destroy();
+
+    // Add spritesheet frames
+    const texture = this.scene.textures.get('enemy-fast');
+    for (let i = 0; i < numFrames; i++) {
+      texture.add(i, 0, i * frameWidth, 0, frameWidth, frameHeight);
+    }
   }
 
   private drawBat(g: Phaser.GameObjects.Graphics, x: number, y: number, frame: number) {
@@ -301,15 +321,22 @@ export class ProceduralAssets {
   private generateEnemyTank() {
     const frameWidth = 32;
     const frameHeight = 32;
+    const numFrames = 4;
     const g = this.scene.add.graphics();
 
-    for (let frame = 0; frame < 4; frame++) {
+    for (let frame = 0; frame < numFrames; frame++) {
       const offsetX = frame * frameWidth;
       this.drawTank(g, offsetX, 0, frame);
     }
 
-    g.generateTexture('enemy-tank', frameWidth * 4, frameHeight);
+    g.generateTexture('enemy-tank', frameWidth * numFrames, frameHeight);
     g.destroy();
+
+    // Add spritesheet frames
+    const texture = this.scene.textures.get('enemy-tank');
+    for (let i = 0; i < numFrames; i++) {
+      texture.add(i, 0, i * frameWidth, 0, frameWidth, frameHeight);
+    }
   }
 
   private drawTank(g: Phaser.GameObjects.Graphics, x: number, y: number, frame: number) {
@@ -374,15 +401,22 @@ export class ProceduralAssets {
   private generateEnemyFlying() {
     const frameWidth = 32;
     const frameHeight = 32;
+    const numFrames = 4;
     const g = this.scene.add.graphics();
 
-    for (let frame = 0; frame < 4; frame++) {
+    for (let frame = 0; frame < numFrames; frame++) {
       const offsetX = frame * frameWidth;
       this.drawGhost(g, offsetX, 0, frame);
     }
 
-    g.generateTexture('enemy-flying', frameWidth * 4, frameHeight);
+    g.generateTexture('enemy-flying', frameWidth * numFrames, frameHeight);
     g.destroy();
+
+    // Add spritesheet frames
+    const texture = this.scene.textures.get('enemy-flying');
+    for (let i = 0; i < numFrames; i++) {
+      texture.add(i, 0, i * frameWidth, 0, frameWidth, frameHeight);
+    }
   }
 
   private drawGhost(g: Phaser.GameObjects.Graphics, x: number, y: number, frame: number) {
@@ -437,15 +471,22 @@ export class ProceduralAssets {
   private generateEnemyShooter() {
     const frameWidth = 32;
     const frameHeight = 32;
+    const numFrames = 4;
     const g = this.scene.add.graphics();
 
-    for (let frame = 0; frame < 4; frame++) {
+    for (let frame = 0; frame < numFrames; frame++) {
       const offsetX = frame * frameWidth;
       this.drawShooter(g, offsetX, 0, frame);
     }
 
-    g.generateTexture('enemy-shooter', frameWidth * 4, frameHeight);
+    g.generateTexture('enemy-shooter', frameWidth * numFrames, frameHeight);
     g.destroy();
+
+    // Add spritesheet frames
+    const texture = this.scene.textures.get('enemy-shooter');
+    for (let i = 0; i < numFrames; i++) {
+      texture.add(i, 0, i * frameWidth, 0, frameWidth, frameHeight);
+    }
   }
 
   private drawShooter(g: Phaser.GameObjects.Graphics, x: number, y: number, frame: number) {
@@ -523,10 +564,11 @@ export class ProceduralAssets {
   }
 
   /**
-   * Tile sprites - 6 different tile types
+   * Tile sprites - 6 different tile types (as spritesheet)
    */
   private generateTiles() {
     const tileSize = 32;
+    const numTiles = 6;
     const g = this.scene.add.graphics();
 
     // Tile 0: Ground/dirt
@@ -547,8 +589,15 @@ export class ProceduralAssets {
     // Tile 5: Grass
     this.drawGrassTile(g, tileSize * 5, 0);
 
-    g.generateTexture('tiles', tileSize * 6, tileSize);
+    g.generateTexture('tiles', tileSize * numTiles, tileSize);
     g.destroy();
+
+    // Add spritesheet frames to the texture
+    const texture = this.scene.textures.get('tiles');
+    texture.add('__BASE', 0, 0, 0, tileSize * numTiles, tileSize);
+    for (let i = 0; i < numTiles; i++) {
+      texture.add(i, 0, i * tileSize, 0, tileSize, tileSize);
+    }
   }
 
   private drawGroundTile(g: Phaser.GameObjects.Graphics, x: number, y: number) {
