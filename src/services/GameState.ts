@@ -1,17 +1,21 @@
+import { DifficultyManager } from './DifficultyManager';
+
 /**
  * GameState - Persistent game state that survives scene restarts
  * Lives and score persist across scene.restart() but reset when starting a new game
+ * Now uses DifficultyManager for starting/max lives based on selected difficulty
  */
 class GameState {
-  private static lives: number = 3;
+  private static lives: number = 5;  // Default medium, will be set by reset()
   private static score: number = 0;
 
   /**
    * Reset all game state to initial values
    * Call this when starting a new game from the menu
+   * Uses DifficultyManager to set appropriate starting lives
    */
   static reset() {
-    this.lives = 3;
+    this.lives = DifficultyManager.getStartingLives();
     this.score = 0;
   }
 
@@ -25,7 +29,8 @@ class GameState {
   }
 
   static addLife(): void {
-    if (this.lives < 9) this.lives++;
+    const maxLives = DifficultyManager.getMaxLives();
+    if (this.lives < maxLives) this.lives++;
   }
 
   static getScore(): number {

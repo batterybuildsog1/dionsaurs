@@ -149,6 +149,10 @@ class NetworkManager {
         // Disconnect from any existing game
         this.disconnectFromGame();
 
+        // Track if WELCOME was received (not just socket open)
+        let welcomeReceived = false;
+        let connectionRejected = false;
+
         this.gameSocket = new PartySocket({
           host: this.partyHost,
           party: "game",
@@ -157,7 +161,7 @@ class NetworkManager {
         });
 
         this.gameSocket.addEventListener("open", () => {
-          console.log("Connected to room:", roomId);
+          console.log("[NetworkManager] Socket opened to room:", roomId);
           this.roomId = roomId;
           this.isConnected = true;
         });
@@ -165,28 +169,64 @@ class NetworkManager {
         this.gameSocket.addEventListener("message", (event) => {
           try {
             const data = JSON.parse(event.data);
-            this.handleGameMessage(data, resolve, reject);
+
+            // Track WELCOME receipt for timeout logic
+            if (data.type === "WELCOME") {
+              console.log("[NetworkManager] WELCOME received for player:", data.playerId);
+              welcomeReceived = true;
+            }
+
+            this.handleGameMessage(data,
+              () => {
+                if (!connectionRejected) resolve();
+              },
+              (err) => {
+                if (!connectionRejected) {
+                  connectionRejected = true;
+                  reject(err);
+                }
+              }
+            );
           } catch (e) {
-            console.error("Error parsing game message:", e);
+            console.error("[NetworkManager] Error parsing game message:", e);
           }
         });
 
-        this.gameSocket.addEventListener("close", () => {
-          console.log("Disconnected from room");
+        this.gameSocket.addEventListener("close", (event) => {
+          console.log("[NetworkManager] Socket closed. Code:", event.code, "Reason:", event.reason);
           this.isConnected = false;
           this.emit("disconnected", {});
         });
 
         this.gameSocket.addEventListener("error", (error) => {
-          console.error("Game room error:", error);
-          reject(error);
+          console.error("[NetworkManager] Socket error:", error);
+          if (!connectionRejected) {
+            connectionRejected = true;
+            reject(error);
+          }
         });
 
-        setTimeout(() => {
-          if (!this.isConnected) {
-            reject(new Error("Connection timeout"));
+        // FIXED: Check if WELCOME was received, not just socket open
+        // Also add a longer timeout with retry logic
+        const checkWelcome = () => {
+          if (connectionRejected) return;
+
+          if (!welcomeReceived) {
+            if (!this.isConnected) {
+              // Socket never even opened
+              connectionRejected = true;
+              reject(new Error("Connection timeout - socket failed to open"));
+            } else {
+              // Socket opened but WELCOME never received
+              console.warn("[NetworkManager] WELCOME not received after 10s, socket is open but server may not have responded");
+              connectionRejected = true;
+              this.disconnectFromGame();
+              reject(new Error("Connection timeout - WELCOME message not received. The room may be full or unavailable."));
+            }
           }
-        }, 10000);
+        };
+
+        setTimeout(checkWelcome, 10000);
       } catch (e) {
         reject(e);
       }

@@ -6,12 +6,16 @@ import { PowerUp, POWERUP_CONFIGS } from "../objects/PowerUp";
 import { Checkpoint } from "../objects/Checkpoint";
 import { LifePickup } from "../objects/LifePickup";
 import { LEVELS, LevelData } from "../data/levels";
+import { TRAINING_LEVELS, isTrainingLevelId, TrainingLevelData } from "../data/trainingLevels";
+import { TrainingProgress, LevelStats } from "../services/TrainingProgress";
 import { networkManager, PlayerState } from "../services/NetworkManager";
 import { GameState } from "../services/GameState";
 import { audioManager } from "../services/AudioManager";
 import { ProceduralAssets } from "../utils/ProceduralAssets";
 import { scoreManager, ScoreManager } from "../services/ScoreManager";
 import { PlayerStats } from "../services/PlayerStats";
+import { DifficultyManager } from "../services/DifficultyManager";
+import { LeaderboardManager } from "../services/LeaderboardManager";
 
 // Player colors for visual distinction
 const PLAYER_COLORS = [0x88ff88, 0xff8888, 0x8888ff, 0xffff88];
@@ -21,6 +25,8 @@ export class GameScene extends Phaser.Scene {
   private remotePlayers: Map<string, Player> = new Map();
   private platforms!: Phaser.Physics.Arcade.StaticGroup;
   private enemies!: Phaser.GameObjects.Group;
+  private enemyRegistry: Map<string, Enemy> = new Map();
+  private killedEnemyIds: Set<string> = new Set();
   private eggs!: Phaser.GameObjects.Group;
   private powerups!: Phaser.GameObjects.Group;
   private _checkpoints!: Phaser.Physics.Arcade.Group;
@@ -59,6 +65,10 @@ export class GameScene extends Phaser.Scene {
   private firstToExitClaimed: boolean = false;
   private levelTimer!: Phaser.GameObjects.Text;
 
+  // Training mode tracking
+  private trainingDeaths: number = 0;  // Track "soft failures" in training
+  private trainingStartTime: number = 0;
+
   constructor() {
     super("GameScene");
     this.currentLevel = LEVELS[0];
@@ -69,13 +79,29 @@ export class GameScene extends Phaser.Scene {
     // This ensures clean state on scene restart
     this.currentLevel = LEVELS[0];
 
+    // Reset training tracking
+    this.trainingDeaths = 0;
+    this.trainingStartTime = Date.now();
+
     if (data && data.levelId) {
-      const foundLevel = LEVELS.find((l) => l.id === data.levelId);
-      if (foundLevel) {
-        this.currentLevel = foundLevel;
-        console.log(`[LEVEL] Loading level ${data.levelId}: ${foundLevel.name}`);
+      // Check if this is a training level (ID >= 100)
+      if (isTrainingLevelId(data.levelId)) {
+        const foundLevel = TRAINING_LEVELS.find((l) => l.id === data.levelId);
+        if (foundLevel) {
+          this.currentLevel = foundLevel;
+          console.log(`[TRAINING] Loading training level ${data.levelId}: ${foundLevel.name}`);
+        } else {
+          console.warn(`[TRAINING] Training level ${data.levelId} not found, defaulting to first training level`);
+          this.currentLevel = TRAINING_LEVELS[0];
+        }
       } else {
-        console.warn(`[LEVEL] Level ${data.levelId} not found in LEVELS array (length: ${LEVELS.length}), defaulting to level 1`);
+        const foundLevel = LEVELS.find((l) => l.id === data.levelId);
+        if (foundLevel) {
+          this.currentLevel = foundLevel;
+          console.log(`[LEVEL] Loading level ${data.levelId}: ${foundLevel.name}`);
+        } else {
+          console.warn(`[LEVEL] Level ${data.levelId} not found in LEVELS array (length: ${LEVELS.length}), defaulting to level 1`);
+        }
       }
     } else {
       console.log(`[LEVEL] No levelId provided, starting at level 1`);
@@ -91,6 +117,10 @@ export class GameScene extends Phaser.Scene {
     // Reset exit synchronization state
     this.playersAtExit.clear();
     this.levelCompleteShown = false;
+
+    // Reset enemy tracking for multiplayer sync
+    this.enemyRegistry.clear();
+    this.killedEnemyIds.clear();
     this.waitingOverlay = undefined;
     this.sceneShuttingDown = false;
     this.exitTriggered = false;
@@ -151,14 +181,20 @@ export class GameScene extends Phaser.Scene {
       }
     });
 
-    // Floor - with pit/gap support
+    // Floor - with pit/gap support (Easy mode: invisible bridges over pits)
     const pits = this.currentLevel.pits || [];
+    const pitsAreDeadly = DifficultyManager.doPitsKill();
     for (let x = 0; x < this.currentLevel.width; x += 32) {
       const tileX = x + 16;
       // Check if this tile falls within any pit
       const inPit = pits.some(pit => tileX >= pit.start && tileX <= pit.end);
       if (!inPit) {
         this.platforms.create(tileX, this.currentLevel.height - 16, "tiles", floorTileFrame).refreshBody();
+      } else if (!pitsAreDeadly) {
+        // Easy mode: create invisible collision bridge over pits
+        const invisibleBridge = this.platforms.create(tileX, this.currentLevel.height - 16, "tiles", floorTileFrame);
+        invisibleBridge.setAlpha(0); // Invisible but collidable
+        invisibleBridge.refreshBody();
       }
     }
 
@@ -211,9 +247,12 @@ export class GameScene extends Phaser.Scene {
       runChildUpdate: true,
     });
 
-    this.currentLevel.enemies.forEach((e) => {
-      const enemy = new Enemy(this, e.x, e.y, e.range, e.enemyType || 'basic');
+    this.currentLevel.enemies.forEach((e, index) => {
+      const enemy = new Enemy(this, e.x, e.y, e.range, e.enemyType || 'basic', index);
+      // Set target player for enemy aiming and chase behavior
+      enemy.setTargetPlayer(this.localPlayer);
       this.enemies.add(enemy);
+      this.enemyRegistry.set(enemy.enemyId, enemy);
     });
 
     // Create Eggs
@@ -342,6 +381,20 @@ export class GameScene extends Phaser.Scene {
     if (this.isMultiplayer) {
       networkManager.clearHandlers();
     }
+
+    // Clear enemy tracking
+    this.enemyRegistry.clear();
+    this.killedEnemyIds.clear();
+  }
+
+  private findEnemyByPosition(x: number, y: number, tolerance: number): Enemy | null {
+    for (const enemy of this.enemies.getChildren() as Enemy[]) {
+      if (!enemy.active) continue;
+      if (Math.abs(enemy.x - x) < tolerance && Math.abs(enemy.y - y) < tolerance) {
+        return enemy;
+      }
+    }
+    return null;
   }
 
   private createPlayers() {
@@ -378,10 +431,17 @@ export class GameScene extends Phaser.Scene {
     remotePlayer.setTint(PLAYER_COLORS[playerState.playerNumber - 1]);
     remotePlayer.disableLocalInput();
 
+    // FIX: Disable physics for remote players - they are purely network-driven
+    // This prevents gravity from fighting against tween interpolation
+    const body = remotePlayer.body as Phaser.Physics.Arcade.Body;
+    body.setAllowGravity(false);
+    body.setImmovable(true);
+    body.setVelocity(0, 0);
+
     this.remotePlayers.set(playerState.id, remotePlayer);
 
-    // Add colliders for remote player
-    this.physics.add.collider(remotePlayer, this.platforms);
+    // NOTE: Platform collider removed - remote players are network-driven puppets
+    // Keep overlap detectors for game interactions
     this.physics.add.overlap(
       remotePlayer.attackHitbox,
       this.enemies,
@@ -564,9 +624,50 @@ export class GameScene extends Phaser.Scene {
       }
 
       switch (data.event) {
-        case "ENEMY_KILLED":
-          // Find and destroy the enemy (by position for now)
+        case "ENEMY_KILLED": {
+          const { enemyId, x, y } = data.data;
+
+          // Deduplication - prevent double kills
+          if (this.killedEnemyIds.has(enemyId)) break;
+          this.killedEnemyIds.add(enemyId);
+
+          // Find enemy by ID first, fallback to position matching
+          let enemy = this.enemyRegistry.get(enemyId);
+          if (!enemy || !enemy.active) {
+            enemy = this.findEnemyByPosition(x, y, 50) as Enemy;
+          }
+
+          if (enemy && enemy.active) {
+            this.enemyRegistry.delete(enemy.enemyId);
+            this.killedEnemyIds.add(enemy.enemyId);
+
+            // Clean up shooter projectiles
+            if (enemy.projectiles && enemy.projectiles.scene) {
+              try {
+                enemy.projectiles.clear(true, true);
+              } catch {
+                // Already destroyed
+              }
+            }
+
+            // Disable enemy immediately
+            enemy.setActive(false);
+            const enemyBody = enemy.body as Phaser.Physics.Arcade.Body;
+            if (enemyBody) {
+              enemyBody.setEnable(false);
+            }
+
+            // Death animation
+            this.tweens.add({
+              targets: enemy,
+              alpha: 0,
+              scaleY: 0.2,
+              duration: 200,
+              onComplete: () => enemy.destroy()
+            });
+          }
           break;
+        }
         case "EGG_COLLECTED":
           // Sync egg collection
           break;
@@ -897,16 +998,17 @@ export class GameScene extends Phaser.Scene {
       const playerY = this.localPlayer.y;
       const floorY = this.currentLevel.height - 16;
 
-      // Check if in a pit zone
+      // Check if in a pit zone (Easy mode: pits don't kill due to invisible bridges)
       const pits = this.currentLevel.pits || [];
       const inPitZone = pits.some(pit => playerX >= pit.start && playerX <= pit.end);
+      const pitsAreDeadly = DifficultyManager.doPitsKill();
 
-      if (inPitZone) {
+      if (inPitZone && pitsAreDeadly) {
         // In pit zone - die if fallen below floor level + buffer
         if (playerY > floorY + 32) {
           this.handleDeath();
         }
-      } else {
+      } else if (!inPitZone) {
         // Not in pit - fallback for world edge
         if (playerY > this.currentLevel.height + 100) {
           this.handleDeath();
@@ -993,7 +1095,12 @@ export class GameScene extends Phaser.Scene {
 
       // Broadcast event in multiplayer
       if (this.isMultiplayer) {
+        // Remove from registry on local kill
+        this.enemyRegistry.delete(e.enemyId);
+        this.killedEnemyIds.add(e.enemyId);
+
         networkManager.sendGameEvent("ENEMY_KILLED", {
+          enemyId: e.enemyId,
           x: enemyX,
           y: enemyY,
         });
@@ -1062,6 +1169,12 @@ export class GameScene extends Phaser.Scene {
   private handleDeath() {
     if (this.isInvincible) return; // Can't die during invincibility
 
+    // Training mode: Show encouraging feedback instead of dying
+    if (DifficultyManager.isTrainingMode()) {
+      this.handleTrainingFail();
+      return;
+    }
+
     // Play hurt sound
     audioManager.play('hurt');
 
@@ -1119,6 +1232,73 @@ export class GameScene extends Phaser.Scene {
 
     // Create death particles
     this.createDeathParticles(this.localPlayer.x, this.localPlayer.y);
+  }
+
+  // Training mode: Encouraging feedback instead of death
+  private handleTrainingFail() {
+    // Track this "soft failure"
+    this.trainingDeaths++;
+
+    // Set brief invincibility
+    this.isInvincible = true;
+
+    // Choose encouraging message
+    const messages = [
+      'Almost!',
+      'Try again!',
+      'You got this!',
+      'Keep going!',
+      'Nice try!',
+      'So close!'
+    ];
+    const msg = Phaser.Math.RND.pick(messages);
+
+    // Show floating encouraging text
+    const text = this.add.text(this.localPlayer.x, this.localPlayer.y - 50, msg, {
+      fontSize: '28px',
+      color: '#FFD700',
+      stroke: '#000000',
+      strokeThickness: 4,
+      fontStyle: 'bold'
+    }).setOrigin(0.5).setScrollFactor(1);
+
+    // Animate text floating up and fading
+    this.tweens.add({
+      targets: text,
+      y: text.y - 40,
+      alpha: 0,
+      duration: 1200,
+      ease: 'Power2',
+      onComplete: () => text.destroy()
+    });
+
+    // Flash player yellow briefly
+    this.localPlayer.setTint(0xffff00);
+
+    // Bounce player back to safe position
+    const respawnX = this._lastCheckpoint?.x ?? 100;
+    const respawnY = this._lastCheckpoint?.y ?? (this.currentLevel.height - 150);
+
+    // Brief knockback animation then teleport
+    this.tweens.add({
+      targets: this.localPlayer,
+      alpha: 0.5,
+      duration: 200,
+      yoyo: true,
+      repeat: 2,
+      onComplete: () => {
+        // Teleport to safe position
+        this.localPlayer.setPosition(respawnX, respawnY);
+        this.localPlayer.setVelocity(0, 0);
+        this.localPlayer.clearTint();
+        this.localPlayer.setAlpha(1);
+
+        // Clear invincibility after brief period
+        this.time.delayedCall(500, () => {
+          this.isInvincible = false;
+        });
+      }
+    });
   }
 
   private createDeathParticles(x: number, y: number) {
@@ -1542,6 +1722,12 @@ export class GameScene extends Phaser.Scene {
     // Play level complete sound
     audioManager.play('levelcomplete');
 
+    // Training mode has its own completion screen
+    if (DifficultyManager.isTrainingMode()) {
+      this.showTrainingComplete();
+      return;
+    }
+
     const nextLevelId = this.currentLevel.id + 1;
     const hasNextLevel = nextLevelId <= LEVELS.length;
     const currentUnlocked = parseInt(
@@ -1560,8 +1746,8 @@ export class GameScene extends Phaser.Scene {
     const teamStats = rankingResult.teamStats;
     const isMultiplayerGame = rankings.length > 1;
 
-    // Determine overlay height based on content
-    const overlayHeight = isMultiplayerGame ? 500 : 380;
+    // Determine overlay height based on content (single player needs more for leaderboard)
+    const overlayHeight = isMultiplayerGame ? 500 : 450;
     const cx = this.cameras.main.width / 2;
     const cy = this.cameras.main.height / 2;
 
@@ -1625,11 +1811,30 @@ export class GameScene extends Phaser.Scene {
       }).setOrigin(0.5).setScrollFactor(0);
       yOffset += 35;
     } else {
-      // Single player stats
+      // Single player stats with difficulty badge and leaderboard
       const player = rankings[0];
       if (player) {
         const totalKills = Object.values(player.enemiesKilled).reduce((s, c) => s + c, 0);
+        const timeSeconds = (player.levelEndTime - player.levelStartTime) / 1000;
         const timeStr = ScoreManager.formatTime(player.levelEndTime - player.levelStartTime);
+
+        // Difficulty badge
+        const diffSettings = DifficultyManager.getSettings();
+        const diffColors: Record<string, string> = {
+          easy: '#4CAF50',
+          medium: '#FF9800',
+          hard: '#f44336'
+        };
+        const diffColor = diffColors[DifficultyManager.getDifficulty()] || '#888888';
+
+        this.add.text(cx, yOffset, diffSettings.name.toUpperCase(), {
+          fontSize: "16px",
+          color: diffColor,
+          fontStyle: "bold",
+          backgroundColor: "#222222",
+          padding: { x: 10, y: 4 }
+        }).setOrigin(0.5).setScrollFactor(0);
+        yOffset += 35;
 
         this.add.text(cx, yOffset, `Score: ${player.totalScore}`, {
           fontSize: "28px",
@@ -1647,7 +1852,49 @@ export class GameScene extends Phaser.Scene {
           fontSize: "18px",
           color: "#aaaaaa"
         }).setOrigin(0.5).setScrollFactor(0);
-        yOffset += 40;
+        yOffset += 30;
+
+        // Submit to leaderboard and check ranking
+        const playerName = "Player";  // Could add name input later
+        const { scoreRank, timeRank } = LeaderboardManager.submitScore(
+          this.currentLevel.id,
+          playerName,
+          player.totalScore,
+          timeSeconds
+        );
+
+        // Show achievement messages
+        if (scoreRank === 1) {
+          this.add.text(cx, yOffset, "NEW HIGH SCORE!", {
+            fontSize: "20px",
+            color: "#ffd700",
+            fontStyle: "bold"
+          }).setOrigin(0.5).setScrollFactor(0);
+          yOffset += 28;
+        } else if (scoreRank > 0 && scoreRank <= 3) {
+          this.add.text(cx, yOffset, `Top ${scoreRank} Score!`, {
+            fontSize: "18px",
+            color: "#ffff00"
+          }).setOrigin(0.5).setScrollFactor(0);
+          yOffset += 28;
+        }
+
+        if (timeRank === 1) {
+          this.add.text(cx, yOffset, "NEW BEST TIME!", {
+            fontSize: "20px",
+            color: "#00ffff",
+            fontStyle: "bold"
+          }).setOrigin(0.5).setScrollFactor(0);
+          yOffset += 28;
+        } else if (timeRank > 0 && timeRank <= 3) {
+          this.add.text(cx, yOffset, `Top ${timeRank} Time!`, {
+            fontSize: "18px",
+            color: "#88ffff"
+          }).setOrigin(0.5).setScrollFactor(0);
+          yOffset += 28;
+        }
+
+        yOffset += 10;
       }
     }
 
@@ -1734,6 +1981,159 @@ export class GameScene extends Phaser.Scene {
         networkManager.disconnect();
       }
       this.scene.start("MenuScene");
+    });
+  }
+
+  // Training mode completion screen with stars and badges
+  private showTrainingComplete() {
+    const trainingLevel = this.currentLevel as TrainingLevelData;
+    const timeSeconds = (Date.now() - this.trainingStartTime) / 1000;
+
+    // Gather stats for this completion
+    const playerData = this.localPlayerStats?.getData();
+    const stats: LevelStats = {
+      time: timeSeconds,
+      eggsCollected: playerData?.eggsCollected ?? 0,
+      totalEggs: trainingLevel.totalEggs,
+      deaths: this.trainingDeaths,
+      enemiesDefeated: this.localPlayerStats?.getTotalEnemyKills() ?? 0,
+      comboMax: 0,  // TODO: track combo in future
+      doubleJumpsUsed: 0,  // TODO: track double jumps in future
+    };
+
+    // Record completion and get results
+    const result = TrainingProgress.recordCompletion(this.currentLevel.id, stats);
+
+    const cx = this.cameras.main.width / 2;
+    const cy = this.cameras.main.height / 2;
+
+    // Dark overlay
+    const overlay = this.add.rectangle(0, 0, 500, 450, 0x000000, 0.92);
+    overlay.setScrollFactor(0);
+    overlay.setPosition(cx, cy);
+
+    let yOffset = cy - 200;
+
+    // Great Job! header
+    this.add.text(cx, yOffset, 'Great Job!', {
+      fontSize: '42px',
+      color: '#FFD700',
+      fontStyle: 'bold',
+      stroke: '#000000',
+      strokeThickness: 3
+    }).setOrigin(0.5).setScrollFactor(0);
+    yOffset += 50;
+
+    // Level name
+    this.add.text(cx, yOffset, `${trainingLevel.name} Complete!`, {
+      fontSize: '24px',
+      color: '#ffffff'
+    }).setOrigin(0.5).setScrollFactor(0);
+    yOffset += 40;
+
+    // Stars display
+    const starsFilled = result.stars;
+    let starsText = '';
+    for (let i = 0; i < 3; i++) {
+      starsText += i < starsFilled ? '★' : '☆';
+    }
+    this.add.text(cx, yOffset, starsText, {
+      fontSize: '48px',
+      color: '#FFD700'
+    }).setOrigin(0.5).setScrollFactor(0);
+    yOffset += 55;
+
+    // Stats
+    const timeStr = `${Math.floor(timeSeconds / 60)}:${Math.floor(timeSeconds % 60).toString().padStart(2, '0')}`;
+    this.add.text(cx, yOffset, `Time: ${timeStr}  |  Eggs: ${stats.eggsCollected}/${stats.totalEggs}`, {
+      fontSize: '18px',
+      color: '#aaaaaa'
+    }).setOrigin(0.5).setScrollFactor(0);
+    yOffset += 25;
+
+    this.add.text(cx, yOffset, `Attempts: ${this.trainingDeaths + 1}`, {
+      fontSize: '16px',
+      color: '#aaaaaa'
+    }).setOrigin(0.5).setScrollFactor(0);
+    yOffset += 35;
+
+    // Badges earned
+    if (result.newBadges.length > 0) {
+      this.add.text(cx, yOffset, 'Badges Earned:', {
+        fontSize: '18px',
+        color: '#88ff88'
+      }).setOrigin(0.5).setScrollFactor(0);
+      yOffset += 25;
+
+      const badgeText = result.newBadges.map(b => TrainingProgress.getBadgeDisplayName(b)).join('  |  ');
+      this.add.text(cx, yOffset, badgeText, {
+        fontSize: '16px',
+        color: '#ffff88',
+        fontStyle: 'bold'
+      }).setOrigin(0.5).setScrollFactor(0);
+      yOffset += 35;
+    } else {
+      yOffset += 20;
+    }
+
+    // Buttons
+    const currentIndex = TRAINING_LEVELS.findIndex(l => l.id === this.currentLevel.id);
+    const hasNextTraining = currentIndex < TRAINING_LEVELS.length - 1;
+
+    // Next Level button (if there's another training level)
+    if (hasNextTraining) {
+      const nextLevel = TRAINING_LEVELS[currentIndex + 1];
+      const nextBtn = this.add.rectangle(cx, yOffset, 250, 45, 0x9C27B0)
+        .setScrollFactor(0).setInteractive({ useHandCursor: true });
+
+      this.add.text(cx, yOffset, `Next: ${nextLevel.name}`, {
+        fontSize: '18px',
+        color: '#ffffff',
+        fontStyle: 'bold'
+      }).setOrigin(0.5).setScrollFactor(0);
+
+      nextBtn.on('pointerover', () => nextBtn.setFillStyle(0xAB47BC));
+      nextBtn.on('pointerout', () => nextBtn.setFillStyle(0x9C27B0));
+      nextBtn.on('pointerdown', () => {
+        if (this.sceneShuttingDown) return;
+        this.sceneShuttingDown = true;
+        this.scene.start('GameScene', { levelId: nextLevel.id, isMultiplayer: false });
+      });
+      yOffset += 55;
+    }
+
+    // Replay button
+    const replayBtn = this.add.rectangle(cx - 70, yOffset, 120, 40, 0x4CAF50)
+      .setScrollFactor(0).setInteractive({ useHandCursor: true });
+
+    this.add.text(cx - 70, yOffset, 'Replay', {
+      fontSize: '16px',
+      color: '#ffffff'
+    }).setOrigin(0.5).setScrollFactor(0);
+
+    replayBtn.on('pointerover', () => replayBtn.setFillStyle(0x66BB6A));
+    replayBtn.on('pointerout', () => replayBtn.setFillStyle(0x4CAF50));
+    replayBtn.on('pointerdown', () => {
+      if (this.sceneShuttingDown) return;
+      this.sceneShuttingDown = true;
+      this.scene.start('GameScene', { levelId: this.currentLevel.id, isMultiplayer: false });
+    });
+
+    // Back button
+    const backBtn = this.add.rectangle(cx + 70, yOffset, 120, 40, 0x666666)
+      .setScrollFactor(0).setInteractive({ useHandCursor: true });
+
+    this.add.text(cx + 70, yOffset, 'Back', {
+      fontSize: '16px',
+      color: '#ffffff'
+    }).setOrigin(0.5).setScrollFactor(0);
+
+    backBtn.on('pointerover', () => backBtn.setFillStyle(0x888888));
+    backBtn.on('pointerout', () => backBtn.setFillStyle(0x666666));
+    backBtn.on('pointerdown', () => {
+      if (this.sceneShuttingDown) return;
+      this.sceneShuttingDown = true;
+      this.scene.start('LevelSelectScene', { isMultiplayer: false });
     });
   }
 }

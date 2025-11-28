@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { DifficultyManager } from '../services/DifficultyManager';
 
 export type EnemyType = 'basic' | 'fast' | 'tank' | 'flying' | 'shooter' | 'raptor' | 'trex';
 
@@ -46,7 +47,7 @@ const ENEMY_CONFIGS: Record<EnemyType, EnemyConfig> = {
     color: 0x00ff00,  // Green - ranged attacker
     scale: 1.1,
     canFly: false,
-    shootInterval: 2000  // Shoots every 2 seconds
+    shootInterval: 2000  // Base: 2 seconds (modified by difficulty)
   },
   raptor: {
     speed: 180,       // Fast and aggressive
@@ -70,6 +71,7 @@ export class Enemy extends Phaser.Physics.Arcade.Sprite {
   private startY: number;
   private direction: number = 1;
   private speed: number;
+  private baseSpeed: number;
   public enemyType: EnemyType;
   public health: number;
   private canFly: boolean;
@@ -78,26 +80,52 @@ export class Enemy extends Phaser.Physics.Arcade.Sprite {
   private shootTimer?: Phaser.Time.TimerEvent;
   public projectiles?: Phaser.Physics.Arcade.Group;
 
+  // Unique identifier for multiplayer sync
+  public readonly enemyId: string;
+
+  // Player tracking for aimed shooting and chasing
+  private targetPlayer: Phaser.Physics.Arcade.Sprite | null = null;
+  public isChasing: boolean = false;  // Track chase state (public for potential visual indicators)
+  private chaseSpeed: number = 0;
+  public isDiving: boolean = false;  // For flying enemies in Hard mode (public for potential visual indicators)
+
   constructor(
     scene: Phaser.Scene,
     x: number,
     y: number,
     patrolDistance: number,
-    type: EnemyType = 'basic'
+    type: EnemyType = 'basic',
+    spawnIndex?: number  // Optional: for deterministic IDs across clients
   ) {
     // Choose texture based on enemy type
     const textureKey = type === 'basic' ? 'enemy' : `enemy-${type}`;
     super(scene, x, y, textureKey);
 
+    // Generate deterministic enemy ID for multiplayer sync
+    // Using spawn index ensures all clients have matching IDs
+    this.enemyId = spawnIndex !== undefined ? `enemy_${spawnIndex}` : `enemy_${Math.round(x)}_${Math.round(y)}`;
+
     this.enemyType = type;
     const config = ENEMY_CONFIGS[type];
+
+    // Apply difficulty settings
+    const diffSettings = DifficultyManager.getSettings();
 
     this.startX = x;
     this.endX = x + patrolDistance;
     this.startY = y;
-    this.speed = config.speed;
-    this.health = config.health;
+
+    // Apply speed multiplier from difficulty
+    this.baseSpeed = config.speed * diffSettings.enemySpeedMultiplier;
+    this.speed = this.baseSpeed;
+
+    // Apply health multiplier from difficulty (round up for fairness)
+    this.health = Math.ceil(config.health * diffSettings.enemyHealthMultiplier);
+
     this.canFly = config.canFly;
+
+    // Calculate chase speed (faster than patrol)
+    this.chaseSpeed = this.baseSpeed * 1.4;
 
     scene.add.existing(this);
     scene.physics.add.existing(this);
@@ -115,15 +143,17 @@ export class Enemy extends Phaser.Physics.Arcade.Sprite {
       body.setAllowGravity(false);
     }
 
-    // Setup shooter projectiles
-    if (type === 'shooter' && config.shootInterval) {
+    // Setup shooter projectiles with difficulty-based fire rate
+    if (type === 'shooter') {
+      const fireRate = diffSettings.shooterFireRate;
+
       this.projectiles = scene.physics.add.group({
         defaultKey: 'projectile',
         maxSize: 10
       });
 
       this.shootTimer = scene.time.addEvent({
-        delay: config.shootInterval,
+        delay: fireRate,
         callback: this.shoot,
         callbackScope: this,
         loop: true
@@ -132,6 +162,11 @@ export class Enemy extends Phaser.Physics.Arcade.Sprite {
 
     // Start the appropriate animation
     this.playAnimation();
+  }
+
+  // Set the target player for aiming and chasing
+  setTargetPlayer(player: Phaser.Physics.Arcade.Sprite): void {
+    this.targetPlayer = player;
   }
 
   private playAnimation() {
@@ -171,6 +206,9 @@ export class Enemy extends Phaser.Physics.Arcade.Sprite {
       }
     });
 
+    // Get projectile speed from difficulty settings
+    const projectileSpeed = DifficultyManager.getProjectileSpeed();
+
     // Create projectile using the projectile texture
     const projectile = this.scene.add.sprite(
       this.x + (this.direction * 20),
@@ -181,7 +219,34 @@ export class Enemy extends Phaser.Physics.Arcade.Sprite {
     this.scene.physics.add.existing(projectile);
     const body = projectile.body as Phaser.Physics.Arcade.Body;
     body.setAllowGravity(false);
-    body.setVelocityX(this.direction * 250);
+
+    // Smart targeting: aim at player if we have a target
+    if (this.targetPlayer && this.targetPlayer.active) {
+      const dx = this.targetPlayer.x - this.x;
+      const dy = this.targetPlayer.y - this.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+
+      if (distance > 0) {
+        // Normalize and apply projectile speed
+        const vx = (dx / distance) * projectileSpeed;
+        const vy = (dy / distance) * projectileSpeed;
+
+        body.setVelocity(vx, vy);
+
+        // Rotate projectile to face direction of travel
+        projectile.setRotation(Math.atan2(dy, dx));
+
+        // Face the player when shooting
+        this.setFlipX(dx < 0);
+        this.direction = dx < 0 ? -1 : 1;
+      } else {
+        // Fallback: shoot horizontally
+        body.setVelocityX(this.direction * projectileSpeed);
+      }
+    } else {
+      // No target: shoot horizontally in facing direction
+      body.setVelocityX(this.direction * projectileSpeed);
+    }
 
     this.projectiles.add(projectile);
 
@@ -218,28 +283,97 @@ export class Enemy extends Phaser.Physics.Arcade.Sprite {
   update() {
     if (!this.body || !this.active) return;
 
-    // Horizontal patrol
-    if (this.x >= this.endX) {
-      this.direction = -1;
-      this.setFlipX(true);
-    } else if (this.x <= this.startX) {
-      this.direction = 1;
-      this.setFlipX(false);
+    const diffSettings = DifficultyManager.getSettings();
+    const detectionRange = diffSettings.enemyDetectionRange;
+    const shouldChase = diffSettings.enemyChaseEnabled;
+    const flyingChase = diffSettings.flyingEnemiesChase;
+
+    // Check if player is in detection range for chase behavior
+    let playerInRange = false;
+    let distanceToPlayer = Infinity;
+    let dxToPlayer = 0;
+    let dyToPlayer = 0;
+
+    if (this.targetPlayer && this.targetPlayer.active && shouldChase) {
+      dxToPlayer = this.targetPlayer.x - this.x;
+      dyToPlayer = this.targetPlayer.y - this.y;
+      distanceToPlayer = Math.sqrt(dxToPlayer * dxToPlayer + dyToPlayer * dyToPlayer);
+      playerInRange = distanceToPlayer <= detectionRange;
     }
 
-    this.setVelocityX(this.speed * this.direction);
-
-    // Flying enemies bob up and down
+    // Flying enemy behavior (Hard mode: dive at player)
     if (this.canFly) {
       const body = this.body as Phaser.Physics.Arcade.Body;
 
-      if (this.y >= this.startY + this.flyRange) {
-        this.flyDirection = -1;
-      } else if (this.y <= this.startY - this.flyRange) {
-        this.flyDirection = 1;
+      if (flyingChase && playerInRange && this.targetPlayer) {
+        // Hard mode: flying enemies dive toward player
+        this.isDiving = true;
+
+        // Move toward player position
+        const moveSpeed = this.chaseSpeed;
+        if (distanceToPlayer > 10) {
+          const vx = (dxToPlayer / distanceToPlayer) * moveSpeed;
+          const vy = (dyToPlayer / distanceToPlayer) * moveSpeed;
+          body.setVelocity(vx, vy);
+
+          // Face direction of movement
+          this.setFlipX(dxToPlayer < 0);
+          this.direction = dxToPlayer < 0 ? -1 : 1;
+        }
+      } else {
+        // Normal flying behavior: horizontal patrol with vertical bob
+        this.isDiving = false;
+
+        // Horizontal patrol
+        if (this.x >= this.endX) {
+          this.direction = -1;
+          this.setFlipX(true);
+        } else if (this.x <= this.startX) {
+          this.direction = 1;
+          this.setFlipX(false);
+        }
+
+        this.setVelocityX(this.speed * this.direction);
+
+        // Vertical bobbing
+        if (this.y >= this.startY + this.flyRange) {
+          this.flyDirection = -1;
+        } else if (this.y <= this.startY - this.flyRange) {
+          this.flyDirection = 1;
+        }
+
+        body.setVelocityY(60 * this.flyDirection);
+      }
+      return; // Flying enemy behavior complete
+    }
+
+    // Ground enemy behavior
+    if (playerInRange && shouldChase) {
+      // Chase mode: pursue the player
+      this.isChasing = true;
+
+      // Move toward player's X position
+      if (Math.abs(dxToPlayer) > 20) {  // Don't jitter when close
+        this.direction = dxToPlayer > 0 ? 1 : -1;
+        this.setFlipX(this.direction < 0);
+        this.setVelocityX(this.chaseSpeed * this.direction);
+      } else {
+        this.setVelocityX(0);
+      }
+    } else {
+      // Normal patrol behavior
+      this.isChasing = false;
+
+      // Horizontal patrol
+      if (this.x >= this.endX) {
+        this.direction = -1;
+        this.setFlipX(true);
+      } else if (this.x <= this.startX) {
+        this.direction = 1;
+        this.setFlipX(false);
       }
 
-      body.setVelocityY(60 * this.flyDirection);
+      this.setVelocityX(this.speed * this.direction);
     }
   }
 
