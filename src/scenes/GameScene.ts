@@ -682,7 +682,7 @@ export class GameScene extends Phaser.Scene {
   private createAnimations() {
     if (this.anims.exists("dino-idle")) return;
 
-    // Player animations
+    // Player animations - JP T-Rex with smooth 6-frame run cycle
     this.anims.create({
       key: "dino-idle",
       frames: this.anims.generateFrameNumbers("player", { start: 0, end: 0 }),
@@ -691,19 +691,25 @@ export class GameScene extends Phaser.Scene {
     });
     this.anims.create({
       key: "dino-run",
-      frames: this.anims.generateFrameNumbers("player", { start: 1, end: 2 }),
-      frameRate: 8,
+      frames: this.anims.generateFrameNumbers("player", { start: 1, end: 6 }),
+      frameRate: 12, // Faster for smooth motion
       repeat: -1,
     });
     this.anims.create({
       key: "dino-jump",
-      frames: this.anims.generateFrameNumbers("player", { start: 3, end: 3 }),
+      frames: this.anims.generateFrameNumbers("player", { start: 7, end: 7 }),
+      frameRate: 1,
+      repeat: -1,
+    });
+    this.anims.create({
+      key: "dino-fall",
+      frames: this.anims.generateFrameNumbers("player", { start: 8, end: 8 }),
       frameRate: 1,
       repeat: -1,
     });
     this.anims.create({
       key: "dino-attack",
-      frames: this.anims.generateFrameNumbers("player", { start: 4, end: 5 }),
+      frames: this.anims.generateFrameNumbers("player", { start: 9, end: 10 }),
       frameRate: 10,
       repeat: 0,
     });

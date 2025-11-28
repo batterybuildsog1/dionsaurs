@@ -367,7 +367,14 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
         this.anims.play('dino-idle', true);
       }
     } else {
-      this.anims.play('dino-jump', true);
+      // In air - use jump or fall animation based on vertical velocity
+      if (body.velocity.y < 0) {
+        // Ascending - jump pose
+        this.anims.play('dino-jump', true);
+      } else {
+        // Descending - fall pose with legs extended
+        this.anims.play('dino-fall', true);
+      }
     }
 
     // Update nametag position

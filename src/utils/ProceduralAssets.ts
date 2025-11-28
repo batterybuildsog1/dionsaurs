@@ -32,12 +32,13 @@ export class ProceduralAssets {
   }
 
   /**
-   * Player sprite sheet - cute dinosaur (7 frames: idle, run1, run2, jump, attack1, attack2, hurt)
+   * Player sprite sheet - Jurassic Park T-Rex
+   * 12 frames: idle(0), run1-6(1-6), jump(7), fall(8), attack1-2(9-10), hurt(11)
    */
   private generatePlayer() {
     const frameWidth = 32;
     const frameHeight = 32;
-    const numFrames = 7;
+    const numFrames = 12;
     const g = this.scene.add.graphics();
 
     for (let frame = 0; frame < numFrames; frame++) {
@@ -56,165 +57,347 @@ export class ProceduralAssets {
   }
 
   private drawDino(g: Phaser.GameObjects.Graphics, x: number, y: number, frame: number) {
-    // Body offsets for animation
-    let bodyY = 0;
-    let legOffset = 0;
-    let mouthOpen = false;
-    let tailWag = 0;
+    // === JURASSIC PARK STYLE T-REX ===
+    // Color palette: Dark browns and olive greens with mottled texture
 
+    // JP T-Rex Color Palette
+    const colors = {
+      // Primary body colors
+      darkBrown: 0x3a2a1a,      // Deepest shadows
+      baseBrown: 0x4a3828,      // Main body color
+      midBrown: 0x5a4838,       // Mid-tones
+      lightBrown: 0x6a5848,     // Highlights
+
+      // Olive/green undertones (JP signature)
+      darkOlive: 0x3a4030,      // Shadow areas with green
+      baseOlive: 0x4a5040,      // Body undertone
+
+      // Belly/underside (lighter, slightly tan)
+      bellyDark: 0x6a5a48,      // Belly shadow
+      bellyLight: 0x8a7a68,     // Belly highlight
+      bellyTan: 0x9a8a78,       // Lightest belly
+
+      // Details
+      clawColor: 0x2a2018,      // Dark claws
+      eyeYellow: 0xffcc44,      // Reptilian eye
+      eyePupil: 0x1a1008,       // Slit pupil
+      mouthRed: 0x8a2020,       // Mouth interior
+      teethWhite: 0xf0e8d8,     // Slightly off-white teeth
+    };
+
+    // Animation variables for smooth movement
+    let bodyY = 0;        // Vertical body bounce
+    let legOffset = 0;    // Front/back leg phase (-3 to +3)
+    let mouthOpen = false;
+    let tailWag = 0;      // Tail counter-balance
+    let headBob = 0;      // Head vertical movement
+
+    // Frame layout: 0=idle, 1-6=run cycle, 7=jump, 8=fall, 9-10=attack, 11=hurt
     switch (frame) {
-      case 0: // Idle
+      case 0: // Idle - relaxed stance
         break;
-      case 1: // Run 1
-        legOffset = 3;
-        tailWag = 2;
+
+      // === 6-FRAME RUN CYCLE (realistic dinosaur gait) ===
+      // Bipedal dinosaur run: alternating leg phases with body bounce
+      case 1: // Run frame 1 - Right leg contact, body down
+        legOffset = 4;     // Right leg forward
+        bodyY = 1;         // Body drops on contact
+        tailWag = -2;      // Tail counters momentum
+        headBob = 1;       // Head drops slightly
         break;
-      case 2: // Run 2
-        legOffset = -3;
-        tailWag = -2;
+      case 2: // Run frame 2 - Right leg push, body rising
+        legOffset = 2;     // Right leg pushing back
+        bodyY = 0;         // Body neutral
+        tailWag = -1;      // Tail transitioning
+        headBob = 0;
         break;
-      case 3: // Jump
+      case 3: // Run frame 3 - Flight phase (both legs off ground briefly)
+        legOffset = 0;     // Legs passing
+        bodyY = -1;        // Body at highest point
+        tailWag = 0;       // Tail straight
+        headBob = -1;      // Head lifts
+        break;
+      case 4: // Run frame 4 - Left leg contact, body down
+        legOffset = -4;    // Left leg forward
+        bodyY = 1;         // Body drops on contact
+        tailWag = 2;       // Tail counters other direction
+        headBob = 1;       // Head drops
+        break;
+      case 5: // Run frame 5 - Left leg push, body rising
+        legOffset = -2;    // Left leg pushing back
+        bodyY = 0;         // Body neutral
+        tailWag = 1;       // Tail transitioning
+        headBob = 0;
+        break;
+      case 6: // Run frame 6 - Flight phase (completing cycle)
+        legOffset = 0;     // Legs passing
+        bodyY = -1;        // Body at highest point
+        tailWag = 0;       // Tail straight
+        headBob = -1;      // Head lifts
+        break;
+
+      case 7: // Jump - ascending, legs tucked
         bodyY = -2;
-        legOffset = -2;
+        legOffset = -3;    // Legs pulled up
+        tailWag = -2;      // Tail trails behind
+        headBob = -1;      // Looking up
         break;
-      case 4: // Attack 1
+
+      case 8: // Fall - descending, legs extended for landing
+        bodyY = 0;
+        legOffset = 2;     // Legs extending down
+        tailWag = 2;       // Tail up for balance
+        headBob = 1;       // Looking down at landing
+        break;
+
+      case 9: // Attack 1 - mouth opens, lunging
         mouthOpen = true;
+        bodyY = -1;
+        headBob = -1;      // Head thrust forward
+        tailWag = -2;      // Tail back for balance
         break;
-      case 5: // Attack 2
+
+      case 10: // Attack 2 - full bite
         mouthOpen = true;
         legOffset = 2;
+        bodyY = 1;         // Body committed to bite
+        headBob = 1;       // Head snapping down
+        tailWag = 2;       // Tail swings
         break;
-      case 6: // Hurt
+
+      case 11: // Hurt - recoiling
         bodyY = 2;
+        legOffset = -1;
+        tailWag = 3;       // Tail whips from impact
+        headBob = 2;       // Head knocked back
         break;
     }
 
-    // === TAIL (drawn first, behind body) ===
-    // Thick dinosaur tail
-    g.fillStyle(0x22a352);
+    // === TAIL (drawn first, behind everything) ===
+    // Thick, powerful tail for balance - JP T-Rex signature
+    // Tail shadow/base
+    g.fillStyle(colors.darkBrown);
     g.beginPath();
-    g.moveTo(x + 4, y + 12 + bodyY + tailWag);
+    g.moveTo(x + 0, y + 16 + bodyY + tailWag);
     g.lineTo(x + 12, y + 10 + bodyY);
-    g.lineTo(x + 14, y + 16 + bodyY);
-    g.lineTo(x + 2, y + 18 + bodyY + tailWag);
+    g.lineTo(x + 14, y + 18 + bodyY);
+    g.lineTo(x + 2, y + 22 + bodyY + tailWag);
     g.closePath();
     g.fillPath();
 
-    // Tail tip
-    g.fillStyle(0x1a8a42);
-    g.fillTriangle(x + 0, y + 14 + bodyY + tailWag, x + 5, y + 12 + bodyY + tailWag, x + 3, y + 19 + bodyY + tailWag);
-
-    // === BACK LEG (behind body) ===
-    g.fillStyle(0x1a8a42);
-    g.fillRect(x + 12, y + 18 + bodyY, 5, 10 - legOffset);
-    // Back foot with claws
-    g.fillStyle(0x166534);
+    // Tail main
+    g.fillStyle(colors.baseBrown);
     g.beginPath();
-    g.moveTo(x + 10, y + 27 + bodyY - legOffset);
-    g.lineTo(x + 19, y + 27 + bodyY - legOffset);
-    g.lineTo(x + 20, y + 30 + bodyY - legOffset);
-    g.lineTo(x + 16, y + 29 + bodyY - legOffset);
-    g.lineTo(x + 13, y + 30 + bodyY - legOffset);
-    g.lineTo(x + 9, y + 29 + bodyY - legOffset);
+    g.moveTo(x + 1, y + 15 + bodyY + tailWag);
+    g.lineTo(x + 12, y + 11 + bodyY);
+    g.lineTo(x + 13, y + 16 + bodyY);
+    g.lineTo(x + 2, y + 20 + bodyY + tailWag);
     g.closePath();
     g.fillPath();
 
-    // === BODY ===
-    // Body shadow/outline
-    g.fillStyle(0x166534);
-    g.fillEllipse(x + 16, y + 14 + bodyY, 12, 10);
+    // Tail highlight stripe (JP mottled look)
+    g.fillStyle(colors.midBrown);
+    g.beginPath();
+    g.moveTo(x + 3, y + 14 + bodyY + tailWag);
+    g.lineTo(x + 10, y + 12 + bodyY);
+    g.lineTo(x + 10, y + 14 + bodyY);
+    g.lineTo(x + 4, y + 16 + bodyY + tailWag);
+    g.closePath();
+    g.fillPath();
 
-    // Main body - bright green
-    g.fillStyle(0x2dd45e);
-    g.fillEllipse(x + 16, y + 13 + bodyY, 11, 9);
+    // === BACK LEG (powerful, muscular) ===
+    // Thigh shadow
+    g.fillStyle(colors.darkBrown);
+    g.fillEllipse(x + 13, y + 18 + bodyY, 6, 5);
 
-    // Belly - lighter yellowish green
-    g.fillStyle(0x90e8a8);
-    g.fillEllipse(x + 17, y + 15 + bodyY, 7, 6);
+    // Thigh main
+    g.fillStyle(colors.baseBrown);
+    g.fillEllipse(x + 13, y + 17 + bodyY, 5, 4);
+
+    // Lower leg (shin)
+    g.fillStyle(colors.darkBrown);
+    g.fillRect(x + 10, y + 20 + bodyY, 5, 8 - legOffset);
+
+    g.fillStyle(colors.baseBrown);
+    g.fillRect(x + 11, y + 20 + bodyY, 3, 7 - legOffset);
+
+    // Back foot with claws
+    g.fillStyle(colors.darkBrown);
+    g.beginPath();
+    g.moveTo(x + 8, y + 27 + bodyY - legOffset);
+    g.lineTo(x + 18, y + 27 + bodyY - legOffset);
+    g.lineTo(x + 19, y + 30 + bodyY - legOffset);
+    g.lineTo(x + 15, y + 29 + bodyY - legOffset);
+    g.lineTo(x + 12, y + 31 + bodyY - legOffset);
+    g.lineTo(x + 9, y + 29 + bodyY - legOffset);
+    g.lineTo(x + 7, y + 30 + bodyY - legOffset);
+    g.closePath();
+    g.fillPath();
+
+    // Claws
+    g.fillStyle(colors.clawColor);
+    g.fillTriangle(x + 7, y + 29 + bodyY - legOffset, x + 5, y + 31 + bodyY - legOffset, x + 9, y + 30 + bodyY - legOffset);
+    g.fillTriangle(x + 12, y + 29 + bodyY - legOffset, x + 12, y + 32 + bodyY - legOffset, x + 14, y + 30 + bodyY - legOffset);
+    g.fillTriangle(x + 17, y + 29 + bodyY - legOffset, x + 19, y + 31 + bodyY - legOffset, x + 18, y + 30 + bodyY - legOffset);
+
+    // === BODY (massive, barrel-shaped) ===
+    // Body shadow layer
+    g.fillStyle(colors.darkBrown);
+    g.fillEllipse(x + 16, y + 14 + bodyY, 11, 10);
+
+    // Main body
+    g.fillStyle(colors.baseBrown);
+    g.fillEllipse(x + 16, y + 13 + bodyY, 10, 9);
+
+    // Body highlight (top)
+    g.fillStyle(colors.midBrown);
+    g.fillEllipse(x + 15, y + 11 + bodyY, 7, 5);
+
+    // Belly area (lighter underside - JP characteristic)
+    g.fillStyle(colors.bellyDark);
+    g.fillEllipse(x + 17, y + 16 + bodyY, 7, 5);
+
+    g.fillStyle(colors.bellyLight);
+    g.fillEllipse(x + 17, y + 16 + bodyY, 5, 3);
+
+    // Mottled texture spots (JP skin pattern)
+    g.fillStyle(colors.darkOlive);
+    g.fillCircle(x + 12, y + 12 + bodyY, 1.5);
+    g.fillCircle(x + 18, y + 10 + bodyY, 1);
+    g.fillCircle(x + 14, y + 15 + bodyY, 1);
 
     // === FRONT LEG ===
-    g.fillStyle(0x22a352);
-    g.fillRect(x + 18, y + 18 + bodyY, 5, 10 + legOffset);
+    // Thigh
+    g.fillStyle(colors.darkBrown);
+    g.fillEllipse(x + 19, y + 18 + bodyY, 5, 4);
+
+    g.fillStyle(colors.baseBrown);
+    g.fillEllipse(x + 19, y + 17 + bodyY, 4, 3);
+
+    // Lower leg
+    g.fillStyle(colors.darkBrown);
+    g.fillRect(x + 17, y + 20 + bodyY, 5, 8 + legOffset);
+
+    g.fillStyle(colors.baseBrown);
+    g.fillRect(x + 18, y + 20 + bodyY, 3, 7 + legOffset);
+
     // Front foot with claws
-    g.fillStyle(0x166534);
+    g.fillStyle(colors.darkBrown);
     g.beginPath();
-    g.moveTo(x + 16, y + 27 + bodyY + legOffset);
+    g.moveTo(x + 15, y + 27 + bodyY + legOffset);
     g.lineTo(x + 25, y + 27 + bodyY + legOffset);
     g.lineTo(x + 26, y + 30 + bodyY + legOffset);
     g.lineTo(x + 22, y + 29 + bodyY + legOffset);
-    g.lineTo(x + 19, y + 30 + bodyY + legOffset);
-    g.lineTo(x + 15, y + 29 + bodyY + legOffset);
+    g.lineTo(x + 19, y + 31 + bodyY + legOffset);
+    g.lineTo(x + 16, y + 29 + bodyY + legOffset);
+    g.lineTo(x + 14, y + 30 + bodyY + legOffset);
     g.closePath();
     g.fillPath();
 
-    // === HEAD ===
-    // Head outline
-    g.fillStyle(0x166534);
-    g.fillEllipse(x + 24, y + 8 + bodyY, 9, 8);
+    // Front claws
+    g.fillStyle(colors.clawColor);
+    g.fillTriangle(x + 14, y + 29 + bodyY + legOffset, x + 12, y + 31 + bodyY + legOffset, x + 16, y + 30 + bodyY + legOffset);
+    g.fillTriangle(x + 19, y + 29 + bodyY + legOffset, x + 19, y + 32 + bodyY + legOffset, x + 21, y + 30 + bodyY + legOffset);
+    g.fillTriangle(x + 24, y + 29 + bodyY + legOffset, x + 26, y + 31 + bodyY + legOffset, x + 25, y + 30 + bodyY + legOffset);
 
-    // Main head - matches body
-    g.fillStyle(0x2dd45e);
-    g.fillEllipse(x + 24, y + 7 + bodyY, 8, 7);
+    // === HEAD (massive JP T-Rex head - the iconic feature) ===
+    // Head Y includes both body bounce and head bob for secondary motion
+    const headY = bodyY + headBob;
 
-    // Snout/jaw - distinctive dino shape
-    g.fillStyle(0x2dd45e);
-    g.fillEllipse(x + 28, y + 10 + bodyY, 5, 4);
+    // Skull base/shadow
+    g.fillStyle(colors.darkBrown);
+    g.fillEllipse(x + 25, y + 8 + headY, 9, 8);
 
-    // Lower jaw
-    g.fillStyle(0x22a352);
-    g.fillEllipse(x + 27, y + 12 + bodyY, 4, 2);
+    // Main skull
+    g.fillStyle(colors.baseBrown);
+    g.fillEllipse(x + 25, y + 7 + headY, 8, 7);
 
-    // Mouth opening with teeth
+    // Brow ridge (JP T-Rex has prominent brow)
+    g.fillStyle(colors.midBrown);
+    g.fillEllipse(x + 24, y + 5 + headY, 5, 3);
+
+    // Snout - long and powerful
+    g.fillStyle(colors.darkBrown);
+    g.fillEllipse(x + 29, y + 10 + headY, 5, 4);
+
+    g.fillStyle(colors.baseBrown);
+    g.fillEllipse(x + 29, y + 9 + headY, 4, 3);
+
+    // Lower jaw (massive)
+    g.fillStyle(colors.darkBrown);
+    g.fillEllipse(x + 28, y + 13 + headY, 4, 2);
+
+    g.fillStyle(colors.midBrown);
+    g.fillEllipse(x + 28, y + 12 + headY, 3, 1.5);
+
+    // Mouth and teeth
     if (mouthOpen) {
-      // Open mouth
-      g.fillStyle(0xff5555);
-      g.fillEllipse(x + 29, y + 11 + bodyY, 3, 3);
-      // Teeth
-      g.fillStyle(0xffffff);
-      g.fillTriangle(x + 27, y + 10 + bodyY, x + 28, y + 12 + bodyY, x + 29, y + 10 + bodyY);
-      g.fillTriangle(x + 29, y + 10 + bodyY, x + 30, y + 12 + bodyY, x + 31, y + 10 + bodyY);
+      // Open mouth interior
+      g.fillStyle(colors.mouthRed);
+      g.fillEllipse(x + 29, y + 11 + headY, 3, 3);
+
+      // Iconic T-Rex teeth
+      g.fillStyle(colors.teethWhite);
+      // Top teeth
+      g.fillTriangle(x + 27, y + 9 + headY, x + 27.5, y + 12 + headY, x + 28, y + 9 + headY);
+      g.fillTriangle(x + 29, y + 9 + headY, x + 29.5, y + 13 + headY, x + 30, y + 9 + headY);
+      g.fillTriangle(x + 31, y + 9 + headY, x + 31.5, y + 12 + headY, x + 32, y + 9 + headY);
+      // Bottom teeth
+      g.fillTriangle(x + 28, y + 14 + headY, x + 28.5, y + 11 + headY, x + 29, y + 14 + headY);
+      g.fillTriangle(x + 30, y + 14 + headY, x + 30.5, y + 12 + headY, x + 31, y + 14 + headY);
     } else {
-      // Closed mouth line
-      g.lineStyle(1, 0x166534);
-      g.lineBetween(x + 25, y + 11 + bodyY, x + 31, y + 11 + bodyY);
+      // Closed mouth with visible teeth line (JP style - always looks menacing)
+      g.lineStyle(1, colors.darkBrown);
+      g.lineBetween(x + 25, y + 11 + headY, x + 32, y + 11 + headY);
+      // Hint of teeth even when closed
+      g.fillStyle(colors.teethWhite);
+      g.fillTriangle(x + 29, y + 10 + headY, x + 29.5, y + 12 + headY, x + 30, y + 10 + headY);
     }
 
-    // Eye socket (slight indent)
-    g.fillStyle(0x22a352);
-    g.fillCircle(x + 24, y + 6 + bodyY, 3);
+    // Eye - reptilian yellow with slit pupil (JP signature)
+    // Eye socket shadow
+    g.fillStyle(colors.darkBrown);
+    g.fillCircle(x + 24, y + 6 + headY, 3);
 
-    // Eye white
-    g.fillStyle(0xffffff);
-    g.fillCircle(x + 24, y + 6 + bodyY, 2.5);
+    // Eye
+    g.fillStyle(colors.eyeYellow);
+    g.fillCircle(x + 24, y + 6 + headY, 2.5);
 
-    // Pupil - looking forward
-    g.fillStyle(0x000000);
-    g.fillCircle(x + 25, y + 6 + bodyY, 1.5);
+    // Vertical slit pupil (reptilian)
+    g.fillStyle(colors.eyePupil);
+    g.fillEllipse(x + 24.5, y + 6 + headY, 1, 2);
 
     // Eye highlight
-    g.fillStyle(0xffffff);
-    g.fillCircle(x + 24, y + 5 + bodyY, 0.8);
+    g.fillStyle(0xffffff, 0.6);
+    g.fillCircle(x + 23, y + 5 + headY, 0.8);
 
     // Nostril
-    g.fillStyle(0x166534);
-    g.fillCircle(x + 30, y + 8 + bodyY, 0.8);
+    g.fillStyle(colors.darkBrown);
+    g.fillCircle(x + 31, y + 8 + headY, 0.8);
 
-    // === TINY T-REX ARMS ===
-    g.fillStyle(0x22a352);
+    // === TINY T-REX ARMS (comically small - JP accurate) ===
     // Upper arm
-    g.fillRect(x + 20, y + 10 + bodyY, 3, 4);
-    // Lower arm/hand with tiny claws
-    g.fillStyle(0x1a8a42);
-    g.fillRect(x + 21, y + 13 + bodyY, 2, 3);
-    g.fillStyle(0x166534);
-    g.fillCircle(x + 22, y + 16 + bodyY, 1);
+    g.fillStyle(colors.darkBrown);
+    g.fillRect(x + 21, y + 10 + bodyY, 3, 4);
 
-    // === BACK RIDGE/SPIKES ===
-    g.fillStyle(0x166534);
-    // Three spikes along the back
-    g.fillTriangle(x + 10, y + 8 + bodyY, x + 12, y + 4 + bodyY, x + 14, y + 8 + bodyY);
-    g.fillTriangle(x + 14, y + 6 + bodyY, x + 16, y + 1 + bodyY, x + 18, y + 6 + bodyY);
-    g.fillTriangle(x + 18, y + 5 + bodyY, x + 20, y + 2 + bodyY, x + 22, y + 6 + bodyY);
+    g.fillStyle(colors.baseBrown);
+    g.fillRect(x + 21, y + 10 + bodyY, 2, 3);
+
+    // Lower arm with tiny claws
+    g.fillStyle(colors.darkBrown);
+    g.fillRect(x + 21, y + 13 + bodyY, 2, 3);
+
+    // Tiny claws
+    g.fillStyle(colors.clawColor);
+    g.fillCircle(x + 21, y + 16 + bodyY, 0.8);
+    g.fillCircle(x + 22.5, y + 16 + bodyY, 0.8);
+
+    // === BACK RIDGE (subtle bumps, not spikes - JP style) ===
+    g.fillStyle(colors.darkOlive);
+    g.fillCircle(x + 10, y + 9 + bodyY, 1.5);
+    g.fillCircle(x + 13, y + 7 + bodyY, 2);
+    g.fillCircle(x + 17, y + 6 + bodyY, 2);
+    g.fillCircle(x + 21, y + 5 + bodyY, 1.5);
   }
 
   /**
