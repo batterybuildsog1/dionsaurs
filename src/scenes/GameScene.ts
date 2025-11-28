@@ -131,11 +131,23 @@ export class GameScene extends Phaser.Scene {
     // Create Platforms
     this.platforms = this.physics.add.staticGroup();
 
+    // Determine tile frame based on theme
+    // Tile frames: 0=dirt, 1=platform, 2=ice, 3=space, 4=lava, 5=grass
+    const getFloorTile = () => {
+      switch (this.currentLevel.theme) {
+        case 'ice': return 2;
+        case 'space': return 3;
+        case 'volcano': return 4;
+        default: return 0;
+      }
+    };
+    const floorTileFrame = getFloorTile();
+
     this.currentLevel.platforms.forEach((p) => {
       if (p.type === "platform") {
         this.platforms.create(p.x, p.y, "tiles", 1).setScale(5, 1).refreshBody();
       } else {
-        this.platforms.create(p.x, p.y, "tiles", 0).refreshBody();
+        this.platforms.create(p.x, p.y, "tiles", floorTileFrame).refreshBody();
       }
     });
 
@@ -146,8 +158,48 @@ export class GameScene extends Phaser.Scene {
       // Check if this tile falls within any pit
       const inPit = pits.some(pit => tileX >= pit.start && tileX <= pit.end);
       if (!inPit) {
-        this.platforms.create(tileX, this.currentLevel.height - 16, "tiles", 0).refreshBody();
+        this.platforms.create(tileX, this.currentLevel.height - 16, "tiles", floorTileFrame).refreshBody();
       }
+    }
+
+    // Add lava glow at bottom of pits for volcano theme
+    if (this.currentLevel.theme === 'volcano' && pits.length > 0) {
+      pits.forEach(pit => {
+        const pitWidth = pit.end - pit.start;
+        const pitCenterX = pit.start + pitWidth / 2;
+
+        // Lava pool glow at bottom of pit
+        const lavaGlow = this.add.ellipse(
+          pitCenterX,
+          this.currentLevel.height + 50,
+          pitWidth,
+          80,
+          0xff4400,
+          0.4
+        );
+        lavaGlow.setScrollFactor(1);
+
+        // Brighter center
+        const lavaBright = this.add.ellipse(
+          pitCenterX,
+          this.currentLevel.height + 30,
+          pitWidth * 0.6,
+          40,
+          0xff6600,
+          0.6
+        );
+        lavaBright.setScrollFactor(1);
+
+        // Pulsing animation
+        this.tweens.add({
+          targets: [lavaGlow, lavaBright],
+          alpha: { from: 0.3, to: 0.7 },
+          duration: 1000 + Math.random() * 500,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.inOut'
+        });
+      });
     }
 
     // Create Players
