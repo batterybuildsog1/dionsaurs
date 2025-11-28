@@ -124,8 +124,9 @@ export class GameScene extends Phaser.Scene {
     this.score = GameState.getScore();
     this._lastCheckpoint = null; // Reset checkpoint on level start
 
-    // Setup World Bounds
-    this.physics.world.setBounds(0, 0, this.currentLevel.width, this.currentLevel.height);
+    // Setup World Bounds - extend downward to allow falling into pits
+    const pitFallBuffer = 200; // Extra space below floor for pit deaths
+    this.physics.world.setBounds(0, 0, this.currentLevel.width, this.currentLevel.height + pitFallBuffer);
 
     // Create Platforms
     this.platforms = this.physics.add.staticGroup();
