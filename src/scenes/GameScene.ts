@@ -238,21 +238,13 @@ export class GameScene extends Phaser.Scene {
       });
     }
 
-    // Create Players
-    this.createPlayers();
+    // IMPORTANT: Create game object groups FIRST, before players
+    // This ensures groups exist when createRemotePlayer() sets up overlaps
 
-    // Create Enemies
+    // Create Enemies group (populate after local player exists for targeting)
     this.enemies = this.add.group({
       classType: Enemy,
       runChildUpdate: true,
-    });
-
-    this.currentLevel.enemies.forEach((e, index) => {
-      const enemy = new Enemy(this, e.x, e.y, e.range, e.enemyType || 'basic', index);
-      // Set target player for enemy aiming and chase behavior
-      enemy.setTargetPlayer(this.localPlayer);
-      this.enemies.add(enemy);
-      this.enemyRegistry.set(enemy.enemyId, enemy);
     });
 
     // Create Eggs
@@ -296,7 +288,19 @@ export class GameScene extends Phaser.Scene {
       });
     }
 
-    // Setup Colliders
+    // NOW create players (groups must exist first for remote player overlaps)
+    this.createPlayers();
+
+    // Populate enemies AFTER local player exists (for targeting)
+    this.currentLevel.enemies.forEach((e, index) => {
+      const enemy = new Enemy(this, e.x, e.y, e.range, e.enemyType || 'basic', index);
+      // Set target player for enemy aiming and chase behavior
+      enemy.setTargetPlayer(this.localPlayer);
+      this.enemies.add(enemy);
+      this.enemyRegistry.set(enemy.enemyId, enemy);
+    });
+
+    // Setup Colliders (after all objects exist)
     this.setupColliders();
 
     // Exit
